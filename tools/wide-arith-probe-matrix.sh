@@ -16,10 +16,15 @@
 # amendment. The vmctx-save design was already measured and rejected
 # in-container - see the negative-result section of wide-arith-results.md.
 #
-#   ./tools/wide-arith-probe-matrix.sh                 # modes A and B, Linux sandbox
-#   ./tools/wide-arith-probe-matrix.sh --full          # + the rejected D modes, per family
-#   ./tools/wide-arith-probe-matrix.sh --generic       # in-container (generic sandbox)
+#   ./tools/wide-arith-probe-matrix.sh                 # all modes, Linux sandbox
+#   ./tools/wide-arith-probe-matrix.sh --generic       # all modes, generic sandbox
 #   ./tools/wide-arith-probe-matrix.sh --reuse-blobs   # skip the guest rebuild
+#   ./tools/wide-arith-probe-matrix.sh --quick         # only A and B (see below)
+#
+# It measures every mode by default. The modes share one binary and one blob
+# set, so the full matrix costs only wall time - and leaving a mode out is how
+# a verdict ends up resting on one machine. --quick exists for re-checking the
+# probe cost alone, not for deciding anything about the saves.
 #
 # Env: ROUNDS (default 8), CPU (default 2), NATIVE_TOOLCHAIN (see below).
 #
@@ -52,12 +57,13 @@ EXPECTED_GAS=109685
 SANDBOX_FLAG="--linux"
 SANDBOX_NAME="linux"
 CARGO_FEATURES=()
-FULL=0
+FULL=1
 REUSE_BLOBS=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --full)    FULL=1;;
+        --quick)   FULL=0;;
+        --full)    FULL=1;;  # kept for compatibility; this is the default now
         --generic) SANDBOX_FLAG=""; SANDBOX_NAME="generic"; CARGO_FEATURES=(--features polkavm/generic-sandbox);;
         --reuse-blobs) REUSE_BLOBS=1;;
         -h|--help) sed -n '2,30p' -- "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0;;
@@ -113,8 +119,10 @@ P=POLKAVM_WIDE_ARITH_EXPERIMENT_NO_SRC_PROBES
 V=POLKAVM_WIDE_ARITH_EXPERIMENT_VMCTX_SAVES
 
 # Mode list: name plus the env assignments that define it. A is the untouched
-# baseline; B is the prize (probes gone, nothing paid); the D modes are the
-# already-rejected vmctx-save design, kept for a Zen 4 data point only.
+# baseline, B the prize (probes gone, nothing paid), C the price of making a
+# mid-body fault recoverable via vmctx, D = B + C the shippable design's hot
+# path. C and D are what tell you whether the design pays *on this machine*,
+# so they are measured unless --quick says otherwise.
 MODES=("A:WIDE_ARITH_EXPERIMENT_UNSET=1" "B_all:$P=all")
 if [ "$FULL" = 1 ]; then
     MODES+=("C_all:$V=all" "D_all:$P=all $V=all")
@@ -204,10 +212,14 @@ How to read it:
     identical machine code there - its spread IS the error bar. In-container on
     Zen 3 that was +-0.7 us on a 57-60 us bench; anything smaller than the k256
     spread is not a signal.
-  * B_all is the prize: the source read-probes' true cost. In-container on
-    Zen 3 it was -2.53 (zebra) / -3.83 (ed25519) / -3.28 (sr25519) us.
-  * The D modes are the rejected vmctx-save design (+0.2...+2.4 us net
-    in-container); they are here for a Zen 4 data point, not for a decision.
+  * B_all is the prize: the source read-probes' true cost. Zen 3 container
+    -2.53 / -3.83 / -3.28 us; machine B (generic sandbox) -3.06 / -3.40 /
+    -3.33 us (zebra / ed25519 / sr25519).
+  * C_all is what making a mid-body fault recoverable costs: +3.58 / +3.64 /
+    +2.84 us in-container. D_all is the net, +1.49 / +2.38 / +0.22 there - a
+    regression in the container. Whether that holds on other machines is
+    exactly what the C and D rows are for: the container is known to
+    over-weight save/restore memory traffic, which is all mode C adds.
   * The blobs are now in the directory benchtool reads, so the same numbers can
     be reproduced in the format of record with:
       POLKAVM_WIDE_ARITH_EXPERIMENT_NO_SRC_PROBES=all ./run-crypto-benches
