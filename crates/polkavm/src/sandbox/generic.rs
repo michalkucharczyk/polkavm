@@ -640,6 +640,10 @@ struct VmCtx {
     next_native_program_counter: AtomicU64,
     memset_continuation: AtomicU64,
     wide_arith_continuation: AtomicU64,
+    // Keep this at the end, mirroring `polkavm_common::zygote::VmCtx` (whose
+    // layout is constrained by the prebuilt zygote) so the trampolines' save
+    // slots are reached with the same displacement width on both sandboxes.
+    wide_arith_save: [AtomicU64; 8],
 }
 
 impl VmCtx {
@@ -670,6 +674,7 @@ impl VmCtx {
             next_native_program_counter: AtomicU64::new(0),
             memset_continuation: AtomicU64::new(0),
             wide_arith_continuation: AtomicU64::new(0),
+            wide_arith_save: [const { AtomicU64::new(0) }; 8],
         }
     }
 }
@@ -2119,6 +2124,7 @@ impl super::Sandbox for Sandbox {
             next_native_program_counter: get_field_offset!(VmCtx::new(), |base| base.next_native_program_counter.as_ptr()),
             memset_continuation: get_field_offset!(VmCtx::new(), |base| base.memset_continuation.as_ptr()),
             wide_arith_continuation: get_field_offset!(VmCtx::new(), |base| base.wide_arith_continuation.as_ptr()),
+            wide_arith_save: get_field_offset!(VmCtx::new(), |base| base.wide_arith_save.as_ptr()),
             next_program_counter: get_field_offset!(VmCtx::new(), |base| base.next_program_counter.as_ptr()),
             program_counter: get_field_offset!(VmCtx::new(), |base| base.program_counter.as_ptr()),
             regs: get_field_offset!(VmCtx::new(), |base| &base.regs),

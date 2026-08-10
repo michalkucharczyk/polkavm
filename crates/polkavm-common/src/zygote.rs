@@ -320,6 +320,19 @@ pub struct VmCtx {
     /// without this field and must keep seeing the same offsets for every
     /// field it touches (its signal handler writes tmp_reg and rip).
     pub wide_arith_continuation: AtomicU64,
+
+    /// Save slots used by the wide-arithmetic trampolines for the register
+    /// state a mid-body fault would otherwise make unrecoverable: the operand
+    /// values whose host homes the kernel reuses as scratch, plus the few
+    /// scratch registers that are not in the instruction's destroyed set.
+    /// Written and read back by the compiled code; the host's fault handling
+    /// reads it to reconstruct the guest-visible registers.
+    ///
+    /// Also invisible to the prebuilt zygote, so — like
+    /// `wide_arith_continuation` above — it must stay at the end of the
+    /// struct. Eight slots covers the worst case (the fused
+    /// `mul256_redc256` kernel: five operand snapshots plus two saves).
+    pub wide_arith_save: [AtomicU64; 8],
 }
 
 #[test]
@@ -443,6 +456,7 @@ impl VmCtx {
 
             message_length: UnsafeCell::new(0),
             wide_arith_continuation: AtomicU64::new(0),
+            wide_arith_save: [const { AtomicU64::new(0) }; 8],
             message_buffer: UnsafeCell::new([0; MESSAGE_BUFFER_SIZE]),
         }
     }

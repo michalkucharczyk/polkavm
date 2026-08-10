@@ -296,6 +296,120 @@ where
     }
 }
 
+/// MEASUREMENT ONLY: the knobs for the source-probe-removal experiment.
+///
+/// Two orthogonal, opcode-family-scoped switches used to price the trade
+/// optimization 1 proposes (drop the source read-probes, and pay for it by
+/// moving the register state a mid-body fault would have to reconstruct from
+/// the host stack into a vmctx save area):
+///
+/// * `POLKAVM_WIDE_ARITH_EXPERIMENT_NO_SRC_PROBES` skips the source
+///   read-probes only (the destination write-probes always stay). **This
+///   breaks the fault contract**: a source load can then fault mid-body,
+///   where the compiled code has already clobbered guest registers and the
+///   host has no fixup path for them. Never run the tracing crosscheck or
+///   any fault/dynamic-paging test with this set.
+/// * `POLKAVM_WIDE_ARITH_EXPERIMENT_VMCTX_SAVES` keeps every probe but moves
+///   the operand snapshots and the non-destroyed scratch saves from the stack
+///   into `VmCtx::wide_arith_save`. This one is *fault-correct* on its own —
+///   all faults still happen in the probe phase, the values merely live
+///   somewhere the host could read — so the full test suite must stay green
+///   with it enabled, which is what validates the plumbing.
+///
+/// Both accept `all` or a comma-separated list of family names: `mul`,
+/// `redc`, `addsub`, `mulu64`, `fused`. Probes and saves are emitted per
+/// trampoline, so partial adoption is free and each family can be priced on
+/// its own.
+///
+/// The pre-existing `POLKAVM_WIDE_ARITH_NO_PROBES` (all probes, including the
+/// destination ones) is left alone; it remains the absolute upper bound.
+struct WideArithExperiment {
+    no_src_probes: u32,
+    vmctx_saves: u32,
+    /// `POLKAVM_WIDE_ARITH_EXPERIMENT_DUMP=1`: log every trampoline's size and
+    /// raw bytes at `info` level, so the sequences of any two modes (including
+    /// the unmodified default) can be diffed and disassembled.
+    dump: bool,
+}
+
+fn wide_arith_family_bit(op: WideArithOp) -> u32 {
+    let index = match op {
+        WideArithOp::Mul256 => 0,
+        WideArithOp::Redc256 => 1,
+        WideArithOp::Add256 | WideArithOp::Sub256 => 2,
+        WideArithOp::Mul256ByU64 => 3,
+        WideArithOp::Mul256Redc256 => 4,
+    };
+
+    1 << index
+}
+
+const WIDE_ARITH_FAMILY_NAMES: [&str; 5] = ["mul", "redc", "addsub", "mulu64", "fused"];
+const WIDE_ARITH_ALL_FAMILIES: u32 = (1 << WIDE_ARITH_FAMILY_NAMES.len()) - 1;
+
+fn wide_arith_parse_families(name: &str, value: Option<std::ffi::OsString>) -> u32 {
+    let Some(value) = value else { return 0 };
+    let value = value.to_string_lossy().to_ascii_lowercase();
+    if value.is_empty() || value == "0" {
+        return 0;
+    }
+
+    if value == "all" || value == "1" {
+        return WIDE_ARITH_ALL_FAMILIES;
+    }
+
+    let mut mask = 0;
+    for family in value.split(',').map(str::trim).filter(|family| !family.is_empty()) {
+        let Some(index) = WIDE_ARITH_FAMILY_NAMES.iter().position(|&known| known == family) else {
+            panic!("{name}: unknown wide-arithmetic family {family:?} (expected `all` or a comma-separated list of {WIDE_ARITH_FAMILY_NAMES:?})");
+        };
+
+        mask |= 1 << index;
+    }
+
+    mask
+}
+
+fn wide_arith_experiment() -> &'static WideArithExperiment {
+    static EXPERIMENT: std::sync::OnceLock<WideArithExperiment> = std::sync::OnceLock::new();
+    EXPERIMENT.get_or_init(|| {
+        const NO_SRC_PROBES: &str = "POLKAVM_WIDE_ARITH_EXPERIMENT_NO_SRC_PROBES";
+        const VMCTX_SAVES: &str = "POLKAVM_WIDE_ARITH_EXPERIMENT_VMCTX_SAVES";
+
+        let experiment = WideArithExperiment {
+            no_src_probes: wide_arith_parse_families(NO_SRC_PROBES, std::env::var_os(NO_SRC_PROBES)),
+            vmctx_saves: wide_arith_parse_families(VMCTX_SAVES, std::env::var_os(VMCTX_SAVES)),
+            dump: std::env::var_os("POLKAVM_WIDE_ARITH_EXPERIMENT_DUMP").is_some_and(|value| value == "1"),
+        };
+
+        let families = |mask: u32| -> String {
+            WIDE_ARITH_FAMILY_NAMES
+                .iter()
+                .enumerate()
+                .filter(|&(index, _)| mask & (1 << index) != 0)
+                .map(|(_, &name)| name)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+
+        if experiment.no_src_probes != 0 {
+            log::warn!(
+                "MEASUREMENT ONLY: wide-arithmetic source probes disabled for [{}] - the fault contract is BROKEN in this build",
+                families(experiment.no_src_probes)
+            );
+        }
+
+        if experiment.vmctx_saves != 0 {
+            log::warn!(
+                "MEASUREMENT ONLY: wide-arithmetic saves redirected to vmctx for [{}]",
+                families(experiment.vmctx_saves)
+            );
+        }
+
+        experiment
+    })
+}
+
 fn set_program_counter_after_interruption<S>(
     compiled_module: &crate::compiler::CompiledModule<S>,
     machine_code_offset: u64,
@@ -2019,6 +2133,7 @@ where
         let pending = core::mem::take(&mut self.0.wide_arith_pending);
         for (label, op, regs) in pending {
             self.asm.define_label(label);
+            let start = self.asm.len();
             match op {
                 WideArithOp::Mul256 => self.wide_arith_body_mul256(regs[0], regs[1], regs[2]),
                 WideArithOp::Redc256 => self.wide_arith_body_redc256(regs[0], regs[1], regs[2]),
@@ -2033,6 +2148,19 @@ where
             // Return to the site that called the trampoline; paired with the
             // site's `call`, this is predicted by the return stack buffer.
             self.push(ret());
+
+            // MEASUREMENT: dump each trampoline's size and raw bytes so the
+            // sequences can be compared across modes (and disassembled / fed
+            // to a cycle-counting harness) without rebuilding anything.
+            if wide_arith_experiment().dump {
+                let end = self.asm.len();
+                let code: String = self.asm.code_mut()[start..end].iter().map(|byte| format!("{byte:02x}")).collect();
+                log::info!(
+                    "wide-arith trampoline: {op:?} regs={:?} len={} bytes={code}",
+                    regs.map(|reg| reg.get()),
+                    end - start,
+                );
+            }
         }
     }
 
@@ -2107,6 +2235,64 @@ where
         std::env::var_os("POLKAVM_WIDE_ARITH_NO_PROBES").is_some_and(|value| value == "1")
     }
 
+    /// MEASUREMENT ONLY: whether this opcode family skips its *source*
+    /// read-probes (destination write-probes always stay). See
+    /// [`WideArithExperiment`].
+    fn wide_arith_skip_src_probes(op: WideArithOp) -> bool {
+        wide_arith_experiment().no_src_probes & wide_arith_family_bit(op) != 0
+    }
+
+    /// MEASUREMENT ONLY: whether this opcode family keeps its operand
+    /// snapshots and non-destroyed scratch saves in the vmctx save area
+    /// instead of on the host stack. See [`WideArithExperiment`].
+    fn wide_arith_vmctx_saves(op: WideArithOp) -> bool {
+        wide_arith_experiment().vmctx_saves & wide_arith_family_bit(op) != 0
+    }
+
+    /// The `n`-th slot of the vmctx save area (`VmCtx::wide_arith_save`).
+    fn wide_arith_save_slot(slot: i32) -> MemOp {
+        const SLOT_COUNT: i32 = 8;
+        assert!(
+            slot >= 0 && slot < SLOT_COUNT,
+            "wide-arithmetic save area overflow: slot {slot} of {SLOT_COUNT}"
+        );
+
+        Self::vmctx_field(S::offset_table().wide_arith_save + 8 * slot as usize)
+    }
+
+    /// Preserves an operand register's value for the rest of the sequence
+    /// (its host home is about to be reused as scratch): a vmctx slot when
+    /// this family's saves live in the vmctx, otherwise a stack push.
+    fn wide_arith_stash_operand(&mut self, reg: RawReg, slot: i32, use_vmctx: bool) {
+        if use_vmctx {
+            self.push(store(RegSize::R64, Self::wide_arith_save_slot(slot), conv_reg(reg)));
+        } else {
+            self.push(push(conv_reg(reg)));
+        }
+    }
+
+    /// Captures the host effective address of a guest pointer previously
+    /// stashed with [`Self::wide_arith_stash_operand`] into `dst`.
+    fn wide_arith_capture_ea_from_stash(&mut self, dst: NativeReg, slot: i32, stack_offset: i32, use_vmctx: bool) {
+        if use_vmctx {
+            self.push(load(LoadKind::U32, dst, Self::wide_arith_save_slot(slot)));
+            if matches!(S::KIND, SandboxKind::Generic) {
+                self.push(add((RegSize::R64, dst, GENERIC_SANDBOX_MEMORY_REG)));
+            }
+        } else {
+            self.wide_arith_capture_ea_from_stack(dst, stack_offset);
+        }
+    }
+
+    /// Reads back a stashed operand value in full (not as an address).
+    fn wide_arith_load_stash(&mut self, dst: NativeReg, slot: i32, stack_offset: i32, use_vmctx: bool) {
+        if use_vmctx {
+            self.push(load(LoadKind::U64, dst, Self::wide_arith_save_slot(slot)));
+        } else {
+            self.push(load(LoadKind::U64, dst, reg_indirect(RegSize::R64, rsp + stack_offset)));
+        }
+    }
+
     /// Read-probes the first and the last byte of `[ptr, ptr + length)`.
     fn wide_arith_probe_read(&mut self, ptr: RawReg, length: i32) {
         if Self::wide_arith_skip_probes() {
@@ -2157,6 +2343,51 @@ where
         }
     }
 
+    /// Saves the scratch registers drawn from outside the destroyed set.
+    /// `regs` is always in the canonical (push) order; the vmctx variant
+    /// assigns them slots `base_slot..` in that same order, so
+    /// [`Self::wide_arith_restore_saves`] can be given the identical list.
+    fn wide_arith_save_saves(&mut self, regs: &[NativeReg], destroyed: &[NativeReg], base_slot: i32, use_vmctx: bool) {
+        if !use_vmctx {
+            self.wide_arith_push_saves(regs, destroyed);
+            return;
+        }
+
+        let mut slot = base_slot;
+        for &reg in regs {
+            if !destroyed.contains(&reg) {
+                self.push(store(RegSize::R64, Self::wide_arith_save_slot(slot), reg));
+                slot += 1;
+            }
+        }
+    }
+
+    /// Restores what [`Self::wide_arith_save_saves`] saved. Takes the same
+    /// canonical order and pops in reverse itself.
+    fn wide_arith_restore_saves(&mut self, regs: &[NativeReg], destroyed: &[NativeReg], base_slot: i32, use_vmctx: bool) {
+        if !use_vmctx {
+            let reversed: Vec<NativeReg> = regs.iter().rev().copied().collect();
+            self.wide_arith_pop_saves(&reversed, destroyed);
+            return;
+        }
+
+        let mut slot = base_slot;
+        for &reg in regs {
+            if !destroyed.contains(&reg) {
+                self.push(load(LoadKind::U64, reg, Self::wide_arith_save_slot(slot)));
+                slot += 1;
+            }
+        }
+    }
+
+    /// The stack adjustment a sequence still owes at its end: zero once the
+    /// stashes live in the vmctx.
+    fn wide_arith_stash_cleanup(&mut self, bytes: i32, use_vmctx: bool) {
+        if !use_vmctx && bytes != 0 {
+            self.push(add((rsp, imm64(bytes))));
+        }
+    }
+
     /// Captures the host effective address of guest pointer `ptr` into `dst`.
     fn wide_arith_capture_ea(&mut self, dst: NativeReg, ptr: RawReg) {
         self.push(mov(RegSize::R32, dst, conv_reg(ptr)));
@@ -2184,18 +2415,29 @@ where
         let [p_a, p_b, t1, w0, w1, w2, w3, w4] =
             Self::wide_arith_pick_scratch::<8>(&[conv_reg(d), conv_reg(s1), conv_reg(s2)], &destroyed);
         let mut win = [w0, w1, w2, w3, w4];
+        let saves = [p_a, p_b, t1, w0, w1, w2, w3, w4, rdx];
+        let use_vmctx = Self::wide_arith_vmctx_saves(WideArithOp::Mul256);
 
-        // Phase 1: probes. All faults happen here.
-        self.wide_arith_probe_read(s1, 32);
-        self.wide_arith_probe_read(s2, 32);
+        // Phase 1: the stashes (before anything faultable), then the probes.
+        if use_vmctx {
+            self.wide_arith_stash_operand(d, 0, true);
+            self.wide_arith_save_saves(&saves, &destroyed, 1, true);
+        }
+
+        if !Self::wide_arith_skip_src_probes(WideArithOp::Mul256) {
+            self.wide_arith_probe_read(s1, 32);
+            self.wide_arith_probe_read(s2, 32);
+        }
         self.wide_arith_probe_write(d, 64);
 
-        // Phase 2: body (fault-free).
+        // Phase 2: body.
         //
         // Snapshot the destination pointer: its home register may be rdx,
         // which the body clobbers.
-        self.push(push(conv_reg(d)));
-        self.wide_arith_push_saves(&[p_a, p_b, t1, w0, w1, w2, w3, w4, rdx], &destroyed);
+        if !use_vmctx {
+            self.wide_arith_stash_operand(d, 0, false);
+            self.wide_arith_save_saves(&saves, &destroyed, 1, false);
+        }
 
         self.wide_arith_capture_ea(p_a, s1);
         self.wide_arith_capture_ea(p_b, s2);
@@ -2233,10 +2475,14 @@ where
         }
 
         // Phase 3: stores + restores. Stack (top first): limb2, limb1, limb0,
-        // <saved registers>, <d snapshot>.
-        self.wide_arith_capture_ea_from_stack(
+        // <saved registers>, <d snapshot> - the last two live in the vmctx
+        // save area instead when this family's saves were redirected there,
+        // leaving only the three parked limbs on the stack.
+        self.wide_arith_capture_ea_from_stash(
             p_a,
-            (3 + Self::wide_arith_pushed_saves(&[p_a, p_b, t1, w0, w1, w2, w3, w4, rdx], &destroyed)) * 8,
+            0,
+            (3 + Self::wide_arith_pushed_saves(&saves, &destroyed)) * 8,
+            use_vmctx,
         );
         for (k, reg) in win.into_iter().enumerate() {
             self.push(store(RegSize::R64, reg_indirect(RegSize::R64, p_a + 8 * (3 + k as i32)), reg));
@@ -2246,8 +2492,8 @@ where
             self.push(store(RegSize::R64, reg_indirect(RegSize::R64, p_a + 8 * k), TMP_REG));
         }
 
-        self.wide_arith_pop_saves(&[rdx, w4, w3, w2, w1, w0, t1, p_b, p_a], &destroyed);
-        self.push(add((rsp, imm64(8))));
+        self.wide_arith_restore_saves(&saves, &destroyed, 1, use_vmctx);
+        self.wide_arith_stash_cleanup(8, use_vmctx);
         self.wide_arith_zero_destroyed(&destroyed);
     }
 
@@ -2258,14 +2504,26 @@ where
         // high halves; t4: the fold count h (= t >> 256). rdx holds k.
         let [p_s, l0, l1, l2, l3, t1, t4] =
             Self::wide_arith_pick_scratch::<7>(&[conv_reg(d), conv_reg(s1), conv_reg(k)], &destroyed);
+        let saves = [p_s, l0, l1, l2, l3, t1, t4, rdx];
+        let use_vmctx = Self::wide_arith_vmctx_saves(WideArithOp::Redc256);
 
-        // Phase 1: probes.
-        self.wide_arith_probe_read(s1, 64);
+        // Phase 1: the stashes (before anything faultable, so the host can
+        // reconstruct the operands after a mid-body fault), then the probes.
+        if use_vmctx {
+            self.wide_arith_stash_operand(d, 0, true);
+            self.wide_arith_save_saves(&saves, &destroyed, 1, true);
+        }
+
+        if !Self::wide_arith_skip_src_probes(WideArithOp::Redc256) {
+            self.wide_arith_probe_read(s1, 64);
+        }
         self.wide_arith_probe_write(d, 32);
 
         // Phase 2: body.
-        self.push(push(conv_reg(d)));
-        self.wide_arith_push_saves(&[p_s, l0, l1, l2, l3, t1, t4, rdx], &destroyed);
+        if !use_vmctx {
+            self.wide_arith_stash_operand(d, 0, false);
+            self.wide_arith_save_saves(&saves, &destroyed, 1, false);
+        }
 
         self.wide_arith_capture_ea(p_s, s1);
         if conv_reg(k) != rdx {
@@ -2308,16 +2566,18 @@ where
         self.push(adc((l3, imm64(0))));
 
         // Phase 3.
-        self.wide_arith_capture_ea_from_stack(
+        self.wide_arith_capture_ea_from_stash(
             p_s,
-            Self::wide_arith_pushed_saves(&[p_s, l0, l1, l2, l3, t1, t4, rdx], &destroyed) * 8,
+            0,
+            Self::wide_arith_pushed_saves(&saves, &destroyed) * 8,
+            use_vmctx,
         );
         for (i, reg) in [l0, l1, l2, l3].into_iter().enumerate() {
             self.push(store(RegSize::R64, reg_indirect(RegSize::R64, p_s + 8 * i as i32), reg));
         }
 
-        self.wide_arith_pop_saves(&[rdx, t4, t1, l3, l2, l1, l0, p_s], &destroyed);
-        self.push(add((rsp, imm64(8))));
+        self.wide_arith_restore_saves(&saves, &destroyed, 1, use_vmctx);
+        self.wide_arith_stash_cleanup(8, use_vmctx);
         self.wide_arith_zero_destroyed(&destroyed);
     }
 
@@ -2327,14 +2587,27 @@ where
         // p: one pointer at a time (s1, then s2, then d); l0..l3: the limbs.
         let [p, l0, l1, l2, l3] =
             Self::wide_arith_pick_scratch::<5>(&[conv_reg(d), conv_reg(c), conv_reg(s1), conv_reg(s2)], &destroyed);
+        let saves = [p, l0, l1, l2, l3];
+        let op = if is_add { WideArithOp::Add256 } else { WideArithOp::Sub256 };
+        let use_vmctx = Self::wide_arith_vmctx_saves(op);
 
-        // Phase 1: probes.
-        self.wide_arith_probe_read(s1, 32);
-        self.wide_arith_probe_read(s2, 32);
+        // Phase 1: the saves (before anything faultable), then the probes.
+        // Every operand register survives the body here, so there is nothing
+        // else for a fault path to reconstruct.
+        if use_vmctx {
+            self.wide_arith_save_saves(&saves, &destroyed, 0, true);
+        }
+
+        if !Self::wide_arith_skip_src_probes(op) {
+            self.wide_arith_probe_read(s1, 32);
+            self.wide_arith_probe_read(s2, 32);
+        }
         self.wide_arith_probe_write(d, 32);
 
         // Phase 2: body.
-        self.wide_arith_push_saves(&[p, l0, l1, l2, l3], &destroyed);
+        if !use_vmctx {
+            self.wide_arith_save_saves(&saves, &destroyed, 0, false);
+        }
 
         self.wide_arith_capture_ea(p, s1);
         self.push(load(LoadKind::U64, l0, reg_indirect(RegSize::R64, p)));
@@ -2365,7 +2638,7 @@ where
             self.push(store(RegSize::R64, reg_indirect(RegSize::R64, p + 8 * i as i32), reg));
         }
 
-        self.wide_arith_pop_saves(&[l3, l2, l1, l0, p], &destroyed);
+        self.wide_arith_restore_saves(&saves, &destroyed, 0, use_vmctx);
         self.wide_arith_zero_destroyed(&destroyed);
 
         // The carry-out register is written last (after the zeroing), so it
@@ -2380,14 +2653,25 @@ where
         // rdx holds the multiplier.
         let [p, l0, l1, l2, l3, l4] =
             Self::wide_arith_pick_scratch::<6>(&[conv_reg(d), conv_reg(c), conv_reg(s1), conv_reg(s2)], &destroyed);
+        let saves = [p, l0, l1, l2, l3, l4, rdx];
+        let use_vmctx = Self::wide_arith_vmctx_saves(WideArithOp::Mul256ByU64);
 
-        // Phase 1: probes.
-        self.wide_arith_probe_read(s1, 32);
+        // Phase 1: the stashes (before anything faultable), then the probes.
+        if use_vmctx {
+            self.wide_arith_stash_operand(d, 0, true);
+            self.wide_arith_save_saves(&saves, &destroyed, 1, true);
+        }
+
+        if !Self::wide_arith_skip_src_probes(WideArithOp::Mul256ByU64) {
+            self.wide_arith_probe_read(s1, 32);
+        }
         self.wide_arith_probe_write(d, 32);
 
         // Phase 2: body.
-        self.push(push(conv_reg(d)));
-        self.wide_arith_push_saves(&[p, l0, l1, l2, l3, l4, rdx], &destroyed);
+        if !use_vmctx {
+            self.wide_arith_stash_operand(d, 0, false);
+            self.wide_arith_save_saves(&saves, &destroyed, 1, false);
+        }
 
         self.wide_arith_capture_ea(p, s1);
         if conv_reg(s2) != rdx {
@@ -2404,17 +2688,14 @@ where
         self.push(adc((l4, imm64(0))));
 
         // Phase 3.
-        self.wide_arith_capture_ea_from_stack(
-            p,
-            Self::wide_arith_pushed_saves(&[p, l0, l1, l2, l3, l4, rdx], &destroyed) * 8,
-        );
+        self.wide_arith_capture_ea_from_stash(p, 0, Self::wide_arith_pushed_saves(&saves, &destroyed) * 8, use_vmctx);
         for (i, reg) in [l0, l1, l2, l3].into_iter().enumerate() {
             self.push(store(RegSize::R64, reg_indirect(RegSize::R64, p + 8 * i as i32), reg));
         }
         self.push(mov(RegSize::R64, TMP_REG, l4));
 
-        self.wide_arith_pop_saves(&[rdx, l4, l3, l2, l1, l0, p], &destroyed);
-        self.push(add((rsp, imm64(8))));
+        self.wide_arith_restore_saves(&saves, &destroyed, 1, use_vmctx);
+        self.wide_arith_stash_cleanup(8, use_vmctx);
         self.wide_arith_zero_destroyed(&destroyed);
 
         // The carry-out register (bits 256..319) is written last (after the
@@ -2444,28 +2725,54 @@ where
         // scratch set is picked with no exclusions.
         let [p_a, p_b, t1, x0, x1, x2, x3, x4, x5, x6, x7] = Self::wide_arith_pick_scratch::<11>(&[], &destroyed);
         let limbs = [x0, x1, x2, x3, x4, x5, x6, x7];
+        let saves = [p_a, p_b, t1, x0, x1, x2, x3, x4, x5, x6, x7, rdx];
+        let use_vmctx = Self::wide_arith_vmctx_saves(WideArithOp::Mul256Redc256);
 
-        // Phase 1: probes, in the same order the interpreter faults
-        // (mul sources, mul destination, then redc destination).
-        self.wide_arith_probe_read(m_s1, 32);
-        self.wide_arith_probe_read(m_s2, 32);
+        // Slot assignment for the vmctx variant, in snapshot order: m_s1 = 0,
+        // m_s2 = 1, m_d = 2, r_d = 3, r_k = 4, then the saves from 5 (the
+        // kernel's whole fault-visible set - it reuses every operand home as
+        // scratch, so a mid-body fault can reconstruct nothing on its own).
+        const SLOT_M_S1: i32 = 0;
+        const SLOT_M_S2: i32 = 1;
+        const SLOT_M_D: i32 = 2;
+        const SLOT_R_D: i32 = 3;
+        const SLOT_R_K: i32 = 4;
+        const SLOT_SAVES: i32 = 5;
+
+        // Phase 1: the snapshots and saves (before anything faultable, so the
+        // host can reconstruct the operands after a mid-body fault), then the
+        // probes, in the same order the interpreter faults (mul sources, mul
+        // destination, then redc destination).
+        if use_vmctx {
+            for (slot, reg) in [m_s1, m_s2, m_d, r_d, r_k].into_iter().enumerate() {
+                self.wide_arith_stash_operand(reg, slot as i32, true);
+            }
+            self.wide_arith_save_saves(&saves, &destroyed, SLOT_SAVES, true);
+        }
+
+        if !Self::wide_arith_skip_src_probes(WideArithOp::Mul256Redc256) {
+            self.wide_arith_probe_read(m_s1, 32);
+            self.wide_arith_probe_read(m_s2, 32);
+        }
         self.wide_arith_probe_write(m_d, 64);
         self.wide_arith_probe_write(r_d, 32);
 
         // Phase 2: snapshots (reads of the original, still-intact operand
         // registers), then the scratch saves.
-        for reg in [m_s1, m_s2, m_d, r_d, r_k] {
-            self.push(push(conv_reg(reg)));
+        if !use_vmctx {
+            for reg in [m_s1, m_s2, m_d, r_d, r_k] {
+                self.push(push(conv_reg(reg)));
+            }
+            self.wide_arith_save_saves(&saves, &destroyed, SLOT_SAVES, false);
         }
-        self.wide_arith_push_saves(&[p_a, p_b, t1, x0, x1, x2, x3, x4, x5, x6, x7, rdx], &destroyed);
 
         // Stack layout (offsets from rsp): [0..SAVES) saves, then the
         // snapshots: r_k at SAVES, r_d at SAVES+8, m_d at SAVES+16,
         // m_s2 at SAVES+24, m_s1 at SAVES+32.
         #[allow(non_snake_case)]
-        let SAVES: i32 = Self::wide_arith_pushed_saves(&[p_a, p_b, t1, x0, x1, x2, x3, x4, x5, x6, x7, rdx], &destroyed) * 8;
-        self.wide_arith_capture_ea_from_stack(p_a, SAVES + 32);
-        self.wide_arith_capture_ea_from_stack(p_b, SAVES + 24);
+        let SAVES: i32 = Self::wide_arith_pushed_saves(&saves, &destroyed) * 8;
+        self.wide_arith_capture_ea_from_stash(p_a, SLOT_M_S1, SAVES + 32, use_vmctx);
+        self.wide_arith_capture_ea_from_stash(p_b, SLOT_M_S2, SAVES + 24, use_vmctx);
 
         // The multiplication: row-major with dual carry chains, full product
         // in x0..x7.
@@ -2495,14 +2802,14 @@ where
 
         // Store the full product (architecturally required), while it also
         // stays in x0..x7 for the fold.
-        self.wide_arith_capture_ea_from_stack(TMP_REG, SAVES + 16);
+        self.wide_arith_capture_ea_from_stash(TMP_REG, SLOT_M_D, SAVES + 16, use_vmctx);
         for (k, &reg) in limbs.iter().enumerate() {
             self.push(store(RegSize::R64, reg_indirect(RegSize::R64, TMP_REG + 8 * k as i32), reg));
         }
 
         // The fold, from registers: t = t_lo + k·t_hi with t_lo = x0..x3,
         // t_hi = x4..x7; h accumulates in p_a (free after the rows).
-        self.push(load(LoadKind::U64, rdx, reg_indirect(RegSize::R64, rsp + SAVES)));
+        self.wide_arith_load_stash(rdx, SLOT_R_K, SAVES, use_vmctx);
         self.push(mov_imm(p_a, imm32(0)));
         self.push(xor((RegSize::R32, TMP_REG, TMP_REG)));
         for j in 0..4usize {
@@ -2528,13 +2835,13 @@ where
         self.push(adc((limbs[3], imm64(0))));
 
         // Phase 3: the redc destination, restores, return.
-        self.wide_arith_capture_ea_from_stack(TMP_REG, SAVES + 8);
+        self.wide_arith_capture_ea_from_stash(TMP_REG, SLOT_R_D, SAVES + 8, use_vmctx);
         for (k, &reg) in limbs[..4].iter().enumerate() {
             self.push(store(RegSize::R64, reg_indirect(RegSize::R64, TMP_REG + 8 * k as i32), reg));
         }
 
-        self.wide_arith_pop_saves(&[rdx, x7, x6, x5, x4, x3, x2, x1, x0, t1, p_b, p_a], &destroyed);
-        self.push(add((rsp, imm64(40))));
+        self.wide_arith_restore_saves(&saves, &destroyed, SLOT_SAVES, use_vmctx);
+        self.wide_arith_stash_cleanup(40, use_vmctx);
         self.wide_arith_zero_destroyed(&destroyed);
     }
 
