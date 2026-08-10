@@ -146,7 +146,12 @@ for round in $(seq "$ROUNDS"); do
 done
 
 step "Results ($SANDBOX_NAME sandbox, best-of-batch / mean, us per verify)"
-awk '
+# The control bench (no wide-arithmetic instructions) runs byte-identical
+# machine code in every mode, so the spread of its per-mode results IS this
+# machine's error bar. Deltas smaller than it are not signals, and the run is
+# worthless if it is larger than the effects being measured - so it is computed
+# first and every delta is checked against it.
+awk -v control="bench-ecdsa-k256" '
     { key = $1 " " $2
       if (!(key in best) || $3 < best[key]) best[key] = $3
       sum[key] += $3; n[key]++
@@ -154,6 +159,21 @@ awk '
       if (!($2 in seen_mode))  { modes[++nm] = $2;   seen_mode[$2] = 1 }
     }
     END {
+        floor_us = 0
+        if (control " A" in best) {
+            lo = hi = best[control " A"]
+            for (m = 1; m <= nm; m++) {
+                key = control " " modes[m]
+                if (!(key in best)) continue
+                if (best[key] < lo) lo = best[key]
+                if (best[key] > hi) hi = best[key]
+            }
+            floor_us = (hi - lo) / 1000
+            printf "\nnoise floor from %s (identical code in every mode): +-%.2f us\n", control, floor_us
+        } else {
+            printf "\nWARNING: control bench %s missing - no error bar for this run\n", control
+        }
+
         for (b = 1; b <= nb; b++) {
             bench = benches[b]
             printf "\n%s\n", bench
@@ -162,10 +182,17 @@ awk '
                 mode = modes[m]; key = bench " " mode
                 if (!(key in best)) continue
                 printf "  %-9s best %8.2f  mean %8.2f", mode, best[key]/1000, sum[key]/n[key]/1000
-                if (mode != "A" && base > 0) printf "  delta %+6.2f", (best[key] - base)/1000
+                if (mode != "A" && base > 0) {
+                    d = (best[key] - base) / 1000
+                    printf "  delta %+6.2f", d
+                    if (floor_us > 0 && (d < 0 ? -d : d) < floor_us) printf "  (within noise)"
+                }
                 printf "\n"
             }
         }
+
+        if (floor_us > 1.0)
+            printf "\nWARNING: the error bar (%.2f us) is larger than the effects being measured\n         (expect 2-4 us). This run cannot decide anything - quiesce the\n         machine (performance governor, idle SMT sibling, ideally isolcpus),\n         raise ROUNDS, and try --generic to remove the sandbox round-trip.\n", floor_us
     }
 ' "$RAW"
 
