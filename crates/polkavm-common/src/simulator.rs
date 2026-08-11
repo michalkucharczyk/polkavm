@@ -2442,6 +2442,8 @@ where
     // operands enter the dependency graph. `decode_slots` is capped at
     // MAX_DECODE_PER_CYCLE (it is a per-cycle decoder width, not a µop
     // count), so the multi-cycle occupancy is expressed through latency.
+    // The fused add256_redc256/sub256_redc256 ≈ 22 instructions: an add256
+    // plus two conditional carry folds, and no multiplies at all.
 
     #[inline(always)]
     fn mul256(&mut self, _offset: u32, _args_length: u32, _d: RawReg, s1: RawReg, s2: RawReg) -> Self::ReturnTy {
@@ -2544,6 +2546,43 @@ where
                 decode_slots: MAX_DECODE_PER_CYCLE,
                 alu_slots: 4,
                 mul_slots: 1,
+                load_slots: 4,
+                store_slots: 4,
+                ..EMPTY_COST
+            },
+        )
+    }
+
+    // The fused fold pair: an add256/sub256 plus two conditional folds. The
+    // dependency graph only takes two sources, so — as for `mul256_redc256`'s
+    // fold constant — `k` is left out of it.
+    #[inline(always)]
+    fn add256_redc256(&mut self, _offset: u32, _args_length: u32, _d: RawReg, s1: RawReg, s2: RawReg, _k: RawReg) -> Self::ReturnTy {
+        self.dispatch_generic(
+            None,
+            Some(s1),
+            Some(s2),
+            InstCost {
+                latency: 10,
+                decode_slots: MAX_DECODE_PER_CYCLE,
+                alu_slots: 4,
+                load_slots: 4,
+                store_slots: 4,
+                ..EMPTY_COST
+            },
+        )
+    }
+
+    #[inline(always)]
+    fn sub256_redc256(&mut self, _offset: u32, _args_length: u32, _d: RawReg, s1: RawReg, s2: RawReg, _k: RawReg) -> Self::ReturnTy {
+        self.dispatch_generic(
+            None,
+            Some(s1),
+            Some(s2),
+            InstCost {
+                latency: 10,
+                decode_slots: MAX_DECODE_PER_CYCLE,
+                alu_slots: 4,
                 load_slots: 4,
                 store_slots: 4,
                 ..EMPTY_COST

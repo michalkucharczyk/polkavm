@@ -3519,6 +3519,49 @@ fn wide_arith_mul256_redc256_impl<M: Memory, const DEBUG: bool>(
     Ok(ctx.next_instruction)
 }
 
+/// Shared implementation of the fused `add256_redc256` / `sub256_redc256`:
+/// `[s1] ± [s2]` with the carry/borrow-out folded back in modulo `2^256 - k`,
+/// where `k` is the *value* of the fourth operand register. Unlike
+/// `add256`/`sub256` there is no carry-out register — the fold consumes it.
+///
+/// Fault order is the same as `add256`/`sub256`: both sources, then the
+/// destination probe.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn wide_arith_add_sub_redc256_impl<M: Memory, const DEBUG: bool, const IS_ADD: bool>(
+    visitor: &mut InterpretedInstance,
+    compiled_offset: Target,
+    program_counter: ProgramCounter,
+    d: Reg,
+    s1: Reg,
+    s2: Reg,
+    k: Reg,
+) -> Result<Target, Target> {
+    let ctx = WideArithContext {
+        program_counter,
+        next_instruction: visitor.go_to_next_instruction(compiled_offset),
+        t0_saved: visitor.get_u64::<false>(Reg::T0),
+    };
+
+    let d_address = cast(visitor.get_u64::<DEBUG>(d)).truncate_to_u32();
+    let lhs_address = cast(visitor.get_u64::<DEBUG>(s1)).truncate_to_u32();
+    let rhs_address = cast(visitor.get_u64::<DEBUG>(s2)).truncate_to_u32();
+    let k_value = visitor.get_u64::<DEBUG>(k);
+
+    let lhs = wide_arith_read_limbs::<M, DEBUG, 4>(visitor, compiled_offset, &ctx, lhs_address)?;
+    let rhs = wide_arith_read_limbs::<M, DEBUG, 4>(visitor, compiled_offset, &ctx, rhs_address)?;
+    wide_arith_probe_dst::<M, DEBUG, 4>(visitor, compiled_offset, &ctx, d_address)?;
+    let result = if IS_ADD {
+        wide_add256_redc256(&lhs, &rhs, k_value)
+    } else {
+        wide_sub256_redc256(&lhs, &rhs, k_value)
+    };
+    wide_arith_write_limbs::<M, DEBUG, 4>(visitor, compiled_offset, &ctx, d_address, &result)?;
+
+    wide_arith_zero_destroyed(visitor, &wide_arith_destroyed::ADD_SUB, &[d, s1, s2, k]);
+    Ok(ctx.next_instruction)
+}
+
 fn trap_impl<const DEBUG: bool>(visitor: &mut InterpretedInstance, program_counter: ProgramCounter) -> Target {
     visitor.program_counter = program_counter;
     visitor.program_counter_valid = true;
@@ -3798,6 +3841,26 @@ define_interpreter! {
         }
 
         match wide_arith_mul256_redc256_impl::<M, DEBUG>(visitor, compiled_offset, program_counter, m_d, m_s1, m_s2, r_d) {
+            Ok(target) | Err(target) => target,
+        }
+    }
+
+    fn add256_redc256<M: Memory, const DEBUG: bool>(visitor: &mut InterpretedInstance, compiled_offset: Target, program_counter: ProgramCounter, d: Reg, s1: Reg, s2: Reg, k: Reg) -> Target {
+        if DEBUG {
+            log::trace!("[{}]: {}", compiled_offset, asm::add256_redc256(d, s1, s2, k));
+        }
+
+        match wide_arith_add_sub_redc256_impl::<M, DEBUG, true>(visitor, compiled_offset, program_counter, d, s1, s2, k) {
+            Ok(target) | Err(target) => target,
+        }
+    }
+
+    fn sub256_redc256<M: Memory, const DEBUG: bool>(visitor: &mut InterpretedInstance, compiled_offset: Target, program_counter: ProgramCounter, d: Reg, s1: Reg, s2: Reg, k: Reg) -> Target {
+        if DEBUG {
+            log::trace!("[{}]: {}", compiled_offset, asm::sub256_redc256(d, s1, s2, k));
+        }
+
+        match wide_arith_add_sub_redc256_impl::<M, DEBUG, false>(visitor, compiled_offset, program_counter, d, s1, s2, k) {
             Ok(target) | Err(target) => target,
         }
     }
@@ -5418,6 +5481,16 @@ impl<'a, const DEBUG: bool> InstructionVisitor for Compiler<'a, DEBUG> {
     fn mul256_redc256(&mut self, m_d: RawReg, m_s1: RawReg, m_s2: RawReg, r_d: RawReg) -> Self::ReturnTy {
         self.assert_64_bit();
         emit_load_store!(self, mul256_redc256(self.program_counter, m_d, m_s1, m_s2, r_d));
+    }
+
+    fn add256_redc256(&mut self, d: RawReg, s1: RawReg, s2: RawReg, k: RawReg) -> Self::ReturnTy {
+        self.assert_64_bit();
+        emit_load_store!(self, add256_redc256(self.program_counter, d, s1, s2, k));
+    }
+
+    fn sub256_redc256(&mut self, d: RawReg, s1: RawReg, s2: RawReg, k: RawReg) -> Self::ReturnTy {
+        self.assert_64_bit();
+        emit_load_store!(self, sub256_redc256(self.program_counter, d, s1, s2, k));
     }
 
     fn mul_upper_signed_unsigned(&mut self, d: RawReg, s1: RawReg, s2: RawReg) -> Self::ReturnTy {

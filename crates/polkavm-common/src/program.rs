@@ -205,10 +205,12 @@ pub mod wide_arith_destroyed {
     /// their operand registers).
     pub const MUL_FAMILY: [Reg; 9] = [Reg::T0, Reg::T1, Reg::T2, Reg::A0, Reg::A1, Reg::A2, Reg::A3, Reg::A4, Reg::A5];
 
-    /// Destroyed by `add256` and `sub256` (in addition to their operand
-    /// registers). A smaller set: their kernels need less scratch, and
-    /// sparing `A4`/`A5` leaves the guest compiler some registers that
-    /// survive the additions between multiplies.
+    /// Destroyed by `add256`, `sub256` and the fused `add256_redc256` /
+    /// `sub256_redc256` (in addition to their operand registers). A smaller
+    /// set: their kernels need less scratch, and sparing `A4`/`A5` leaves the
+    /// guest compiler some registers that survive the additions between
+    /// multiplies. The fused pair needs no more scratch than the plain
+    /// operations — its carry folds are conditional moves, not multiplies.
     pub const ADD_SUB: [Reg; 7] = [Reg::T0, Reg::T1, Reg::T2, Reg::A0, Reg::A1, Reg::A2, Reg::A3];
 }
 
@@ -1882,6 +1884,8 @@ define_all_instructions! {
         sub256,
         mul256_by_u64,
         mul256_redc256,
+        add256_redc256,
+        sub256_redc256,
     ]
 }
 
@@ -2384,6 +2388,8 @@ define_instruction_set! {
         sub256                                   = 235,
         mul256_by_u64                            = 236,
         mul256_redc256                           = 237,
+        add256_redc256                           = 238,
+        sub256_redc256                           = 239,
     ]
 }
 
@@ -3163,6 +3169,22 @@ impl<'a, 'b, 'c> InstructionVisitor for InstructionFormatter<'a, 'b, 'c> {
         let m_s2 = self.format_reg(m_s2);
         let r_d = self.format_reg(r_d);
         write!(self, "u512 [{m_d}] = u256 [{m_s1}] * u256 [{m_s2}], u256 [{r_d}] = u512 [{m_d}] mod (2^256 - a4)")
+    }
+
+    fn add256_redc256(&mut self, d: RawReg, s1: RawReg, s2: RawReg, k: RawReg) -> Self::ReturnTy {
+        let d = self.format_reg(d);
+        let s1 = self.format_reg(s1);
+        let s2 = self.format_reg(s2);
+        let k = self.format_reg(k);
+        write!(self, "u256 [{d}] = (u256 [{s1}] + u256 [{s2}]) mod (2^256 - {k})")
+    }
+
+    fn sub256_redc256(&mut self, d: RawReg, s1: RawReg, s2: RawReg, k: RawReg) -> Self::ReturnTy {
+        let d = self.format_reg(d);
+        let s1 = self.format_reg(s1);
+        let s2 = self.format_reg(s2);
+        let k = self.format_reg(k);
+        write!(self, "u256 [{d}] = (u256 [{s1}] - u256 [{s2}]) mod (2^256 - {k})")
     }
 
     fn mul_upper_signed_unsigned(&mut self, d: RawReg, s1: RawReg, s2: RawReg) -> Self::ReturnTy {

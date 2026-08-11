@@ -21,6 +21,11 @@ pub(crate) enum WideArithOp {
     /// An adjacent `mul256` + `redc256` pair fused into one trampoline
     /// (the product is kept in host registers between the two operations).
     Mul256Redc256,
+    /// `add256`/`sub256` with the carry/borrow-out folded back in modulo
+    /// `2^256 - k` instead of being returned; `k` is the fourth operand's
+    /// value.
+    Add256Redc256,
+    Sub256Redc256,
 }
 
 use crate::error::Error;
@@ -970,6 +975,18 @@ where
     fn sub256(&mut self, code_offset: u32, args_length: u32, d: RawReg, c: RawReg, s1: RawReg, s2: RawReg) -> Self::ReturnTy {
         assert_eq!(B::BITNESS, Bitness::B64);
         emit_instruction!(self, code_offset, args_length, CONTINUE_BASIC_BLOCK, sub256(d, c, s1, s2));
+    }
+
+    #[inline(always)]
+    fn add256_redc256(&mut self, code_offset: u32, args_length: u32, d: RawReg, s1: RawReg, s2: RawReg, k: RawReg) -> Self::ReturnTy {
+        assert_eq!(B::BITNESS, Bitness::B64);
+        emit_instruction!(self, code_offset, args_length, CONTINUE_BASIC_BLOCK, add256_redc256(d, s1, s2, k));
+    }
+
+    #[inline(always)]
+    fn sub256_redc256(&mut self, code_offset: u32, args_length: u32, d: RawReg, s1: RawReg, s2: RawReg, k: RawReg) -> Self::ReturnTy {
+        assert_eq!(B::BITNESS, Bitness::B64);
+        emit_instruction!(self, code_offset, args_length, CONTINUE_BASIC_BLOCK, sub256_redc256(d, s1, s2, k));
     }
 
     #[inline(always)]

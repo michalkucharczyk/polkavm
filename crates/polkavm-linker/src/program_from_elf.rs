@@ -688,6 +688,13 @@ enum WideArithOp {
     /// the fold constant k is implicitly taken from A4). The `carry` field
     /// holds the redc destination *pointer* (read, not written).
     Mul256Redc256,
+    /// `add256`/`sub256` with the carry/borrow-out folded back in modulo
+    /// `2^256 - k` instead of being returned. The `carry` field holds the
+    /// fold constant register (read, not written) — unlike 237, whose four
+    /// slots were already full of pointers, these have a slot to spare, so
+    /// `k` is an explicit operand instead of being pinned to A4.
+    Add256Redc256,
+    Sub256Redc256,
 }
 
 #[derive(Copy, Clone)]
@@ -723,10 +730,17 @@ impl<T> BasicInst<T> {
             BasicInst::MulWide { src1, src2, .. } => RegMask::from(src1) | RegMask::from(src2),
             BasicInst::WideArith { op, dst, carry, src1, src2 } => {
                 let mut mask = RegMask::from(dst) | RegMask::from(src1) | RegMask::from(src2);
-                if matches!(op, WideArithOp::Mul256Redc256) {
-                    // `carry` holds the redc destination pointer (read), and
-                    // the fold constant is implicitly taken from A4.
-                    mask |= carry.map_or(RegMask::empty(), RegMask::from) | RegMask::from(Reg::A4);
+                match op {
+                    WideArithOp::Mul256Redc256 => {
+                        // `carry` holds the redc destination pointer (read), and
+                        // the fold constant is implicitly taken from A4.
+                        mask |= carry.map_or(RegMask::empty(), RegMask::from) | RegMask::from(Reg::A4);
+                    }
+                    WideArithOp::Add256Redc256 | WideArithOp::Sub256Redc256 => {
+                        // `carry` holds the fold constant (read).
+                        mask |= carry.map_or(RegMask::empty(), RegMask::from);
+                    }
+                    _ => {}
                 }
                 mask
             }
@@ -763,7 +777,9 @@ impl<T> BasicInst<T> {
                 // registers; the carry-out, where present, is written after
                 // the zeroing.
                 let fixed = match op {
-                    WideArithOp::Add256 | WideArithOp::Sub256 => &polkavm_common::program::wide_arith_destroyed::ADD_SUB[..],
+                    WideArithOp::Add256 | WideArithOp::Sub256 | WideArithOp::Add256Redc256 | WideArithOp::Sub256Redc256 => {
+                        &polkavm_common::program::wide_arith_destroyed::ADD_SUB[..]
+                    }
                     _ => &polkavm_common::program::wide_arith_destroyed::MUL_FAMILY[..],
                 };
                 RegMask::from_regs(fixed.iter().map(|&reg| Reg::from(reg)))
@@ -2894,6 +2910,11 @@ const FUNC3_HEAP_BASE: u32 = 0b011;
 // pointer register (`rd` is the carry-out, i.e. the only written register).
 const FUNC3_WIDE_ARITH_R: u32 = 0b100;
 const FUNC3_WIDE_ARITH_R4: u32 = 0b101;
+// The fused fold shapes (add256_redc256, sub256_redc256). They need their own
+// `func3` because `func2` is only two bits wide and the R4 group above has
+// three of its four values taken. Same slot layout as `add256`/`sub256`, with
+// the carry-out slot (`rd`) repurposed as the fold constant `k`.
+const FUNC3_WIDE_ARITH_R4_FOLD: u32 = 0b110;
 
 fn try_parse_epilogue(
     decoder_config: &DecoderConfig,
@@ -3238,8 +3259,13 @@ fn parse_code_section(
         }
 
         let r = crate::riscv::R(raw_inst);
-        if r.opcode() == crate::riscv::OPCODE_CUSTOM_0 && matches!(r.func3(), FUNC3_WIDE_ARITH_R | FUNC3_WIDE_ARITH_R4) {
-            let (op, opcode, dst, carry) = if r.func3() == FUNC3_WIDE_ARITH_R {
+        if r.opcode() == crate::riscv::OPCODE_CUSTOM_0
+            && matches!(
+                r.func3(),
+                FUNC3_WIDE_ARITH_R | FUNC3_WIDE_ARITH_R4 | FUNC3_WIDE_ARITH_R4_FOLD
+            )
+        {
+            let (op, opcode, dst, carry, carry_role) = if r.func3() == FUNC3_WIDE_ARITH_R {
                 let op = match r.func7() {
                     0 => WideArithOp::Mul256,
                     1 => WideArithOp::Redc256,
@@ -3253,8 +3279,8 @@ fn parse_code_section(
                     WideArithOp::Mul256 => Opcode::mul256,
                     _ => Opcode::redc256,
                 };
-                (op, opcode, r.dst(), None)
-            } else {
+                (op, opcode, r.dst(), None, "")
+            } else if r.func3() == FUNC3_WIDE_ARITH_R4 {
                 let (op, opcode) = match r.func2() {
                     0 => (WideArithOp::Add256, Opcode::add256),
                     1 => (WideArithOp::Sub256, Opcode::sub256),
@@ -3267,7 +3293,25 @@ fn parse_code_section(
                 };
                 // R4 shape: rd = carry-out (the only written register),
                 // rs3 = destination pointer.
-                (op, opcode, r.src3(), Some(r.dst()))
+                (op, opcode, r.src3(), Some(r.dst()), "carry-out register")
+            } else {
+                let (op, opcode) = match r.func2() {
+                    0 => (WideArithOp::Add256Redc256, Opcode::add256_redc256),
+                    1 => (WideArithOp::Sub256Redc256, Opcode::sub256_redc256),
+                    func2 => {
+                        return Err(ProgramFromElfError::other(format!(
+                            "found a fused wide-arithmetic fold instruction with an unknown func2: {func2}"
+                        )))
+                    }
+                };
+                // Fused fold shape: rs3 = destination pointer as above, but rd
+                // is the fold constant `k` — a value rather than a pointer, and
+                // read rather than written (nothing is written to a register:
+                // the fold consumes the carry-out). The zero register is
+                // rejected for it just like for every other wide-arithmetic
+                // operand, so a guest wanting `k = 0` (legal — it degenerates
+                // to `mod 2^256`) has to materialize the zero itself.
+                (op, opcode, r.src3(), Some(r.dst()), "fold constant register")
             };
 
             if !isa.supports_opcode(opcode) {
@@ -3276,7 +3320,7 @@ fn parse_code_section(
                 )));
             }
 
-            let cast_pointer = |reg: RReg, what: &str| -> Result<Reg, ProgramFromElfError> {
+            let cast_operand = |reg: RReg, what: &str| -> Result<Reg, ProgramFromElfError> {
                 cast_reg_non_zero(reg)?.ok_or_else(|| {
                     ProgramFromElfError::other(format!(
                         "found a {op:?} instruction with the zero register as the {what}"
@@ -3284,11 +3328,11 @@ fn parse_code_section(
                 })
             };
 
-            let dst = cast_pointer(dst, "destination pointer")?;
-            let src1 = cast_pointer(r.src1(), "first source")?;
-            let src2 = cast_pointer(r.src2(), "second source")?;
+            let dst = cast_operand(dst, "destination pointer")?;
+            let src1 = cast_operand(r.src1(), "first source")?;
+            let src2 = cast_operand(r.src2(), "second source")?;
             let carry = match carry {
-                Some(reg) => Some(cast_pointer(reg, "carry-out register")?),
+                Some(reg) => Some(cast_operand(reg, carry_role)?),
                 None => None,
             };
 
@@ -3310,7 +3354,7 @@ fn parse_code_section(
                         && next_r.src1() == r.dst()
                         && next_r.src2() == RReg::A4
                     {
-                        let r_d = cast_pointer(next_r.dst(), "redc destination pointer")?;
+                        let r_d = cast_operand(next_r.dst(), "redc destination pointer")?;
                         output.push((
                             Source {
                                 section_index,
@@ -9606,6 +9650,12 @@ fn emit_code(
                     }
                     WideArithOp::Mul256Redc256 => {
                         Instruction::mul256_redc256(conv_reg(dst), conv_reg(src1), conv_reg(src2), conv_reg(carry.unwrap()))
+                    }
+                    WideArithOp::Add256Redc256 => {
+                        Instruction::add256_redc256(conv_reg(dst), conv_reg(src1), conv_reg(src2), conv_reg(carry.unwrap()))
+                    }
+                    WideArithOp::Sub256Redc256 => {
+                        Instruction::sub256_redc256(conv_reg(dst), conv_reg(src1), conv_reg(src2), conv_reg(carry.unwrap()))
                     }
                 },
                 BasicInst::RegReg { kind, dst, src1, src2 } => {

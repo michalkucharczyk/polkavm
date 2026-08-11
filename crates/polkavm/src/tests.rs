@@ -5226,7 +5226,9 @@ fn wide_arith_xorshift(state: &mut u64) -> u64 {
 }
 
 fn wide_arith_basic(config: Config, _isa: InstructionSetKind) {
-    use polkavm_common::operation::{wide_add256, wide_mul256, wide_mul256_by_u64, wide_redc256, wide_sub256};
+    use polkavm_common::operation::{
+        wide_add256, wide_add256_redc256, wide_mul256, wide_mul256_by_u64, wide_redc256, wide_sub256, wide_sub256_redc256,
+    };
 
     let tester = WideArithTester::new(&config);
     let base = tester.base();
@@ -5278,10 +5280,29 @@ fn wide_arith_basic(config: Config, _isa: InstructionSetKind) {
         );
         assert_eq!(read_limbs::<4>(&mut instance, d_at), wide_redc256(&src512, k), "k = {k}");
     }
+
+    // The fused folds, over the same k values. There is no carry-out register:
+    // the fold consumes the carry/borrow.
+    for k in [0, 38, (1 << 32) + 977, u64::MAX] {
+        for is_add in [true, false] {
+            let op = if is_add { asm::add256_redc256 } else { asm::sub256_redc256 };
+            let expected = if is_add {
+                wide_add256_redc256(&a, &b, k)
+            } else {
+                wide_sub256_redc256(&a, &b, k)
+            };
+            let mut instance = tester.run(
+                &[op(A0, A1, A2, A3)],
+                &[(A0, u64::from(d_at)), (A1, u64::from(a_at)), (A2, u64::from(b_at)), (A3, k)],
+                &[(a_at, &limbs_to_bytes(&a)), (b_at, &limbs_to_bytes(&b))],
+            );
+            assert_eq!(read_limbs::<4>(&mut instance, d_at), expected, "is_add = {is_add}, k = {k}");
+        }
+    }
 }
 
 fn wide_arith_aliasing(config: Config, _isa: InstructionSetKind) {
-    use polkavm_common::operation::{wide_add256, wide_mul256, wide_redc256};
+    use polkavm_common::operation::{wide_add256, wide_add256_redc256, wide_mul256, wide_redc256, wide_sub256_redc256};
 
     let tester = WideArithTester::new(&config);
     let base = tester.base();
@@ -5349,6 +5370,52 @@ fn wide_arith_aliasing(config: Config, _isa: InstructionSetKind) {
             "offset = {offset}"
         );
     }
+
+    // The fused folds with the destination partially overlapping a source at a
+    // misaligned offset: the result must still come from the original values.
+    for offset in [0u32, 8, 16, 24] {
+        for is_add in [true, false] {
+            let op = if is_add { asm::add256_redc256 } else { asm::sub256_redc256 };
+            let expected = if is_add {
+                wide_add256_redc256(&a, &b, 38)
+            } else {
+                wide_sub256_redc256(&a, &b, 38)
+            };
+            let mut instance = tester.run(
+                &[op(A0, A1, A2, A3)],
+                &[
+                    (A0, u64::from(base + offset)),
+                    (A1, u64::from(base)),
+                    (A2, u64::from(base + 0x100)),
+                    (A3, 38),
+                ],
+                &[(base, &limbs_to_bytes(&a)), (base + 0x100, &limbs_to_bytes(&b))],
+            );
+            assert_eq!(
+                read_limbs::<4>(&mut instance, base + offset),
+                expected,
+                "fused fold (is_add = {is_add}) offset = {offset}"
+            );
+        }
+    }
+
+    // Every operand aliased into one register: the pointer *is* the fold
+    // constant, so the kernel has to read k before it destroys anything.
+    let k = u64::from(base);
+    let mut instance = tester.run(
+        &[asm::add256_redc256(A0, A0, A0, A0)],
+        &[(A0, k)],
+        &[(base, &limbs_to_bytes(&a))],
+    );
+    assert_eq!(read_limbs::<4>(&mut instance, base), wide_add256_redc256(&a, &a, k));
+
+    // The same for sub, where the difference (and hence the fold) is zero.
+    let mut instance = tester.run(
+        &[asm::sub256_redc256(A0, A0, A0, A0)],
+        &[(A0, k)],
+        &[(base, &limbs_to_bytes(&a))],
+    );
+    assert_eq!(read_limbs::<4>(&mut instance, base), wide_sub256_redc256(&a, &a, k));
 }
 
 fn wide_arith_back_to_back(config: Config, _isa: InstructionSetKind) {
@@ -5424,7 +5491,7 @@ fn wide_arith_back_to_back(config: Config, _isa: InstructionSetKind) {
 }
 
 fn wide_arith_reg_sweep(config: Config, _isa: InstructionSetKind) {
-    use polkavm_common::operation::{wide_add256, wide_mul256};
+    use polkavm_common::operation::{wide_add256, wide_add256_redc256, wide_mul256, wide_sub256_redc256};
 
     let tester = WideArithTester::new(&config);
     let base = tester.base();
@@ -5484,10 +5551,55 @@ fn wide_arith_reg_sweep(config: Config, _isa: InstructionSetKind) {
             }
         }
     }
+
+    // The fused folds have four register operands, so their kernels see four
+    // exclusions when picking scratch — the tightest case in the family.
+    // Sweeping every distinct 4-tuple covers it; the op alternates so both
+    // kernels get the full sweep between them.
+    let k = 38;
+    let mut sweep = 0;
+    for d in regs {
+        for s1 in regs {
+            for s2 in regs {
+                for k_reg in regs {
+                    let operands = [d, s1, s2, k_reg];
+                    if operands.iter().enumerate().any(|(i, a)| operands[..i].contains(a)) {
+                        continue;
+                    }
+
+                    sweep += 1;
+                    let is_add = sweep % 2 == 0;
+                    let op = if is_add { asm::add256_redc256 } else { asm::sub256_redc256 };
+                    let expected = if is_add {
+                        wide_add256_redc256(&a, &b, k)
+                    } else {
+                        wide_sub256_redc256(&a, &b, k)
+                    };
+                    let mut instance = tester.run(
+                        &[op(d, s1, s2, k_reg)],
+                        &[
+                            (d, u64::from(d_at)),
+                            (s1, u64::from(a_at)),
+                            (s2, u64::from(b_at)),
+                            (k_reg, k),
+                        ],
+                        memory,
+                    );
+                    assert_eq!(
+                        read_limbs::<4>(&mut instance, d_at),
+                        expected,
+                        "fused fold (is_add = {is_add}) {d:?}, {s1:?}, {s2:?}, {k_reg:?}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn wide_arith_randomized(config: Config, _isa: InstructionSetKind) {
-    use polkavm_common::operation::{wide_add256, wide_mul256, wide_mul256_by_u64, wide_redc256, wide_sub256};
+    use polkavm_common::operation::{
+        wide_add256, wide_add256_redc256, wide_mul256, wide_mul256_by_u64, wide_redc256, wide_sub256, wide_sub256_redc256,
+    };
 
     let tester = WideArithTester::new(&config);
     let base = tester.base();
@@ -5544,6 +5656,27 @@ fn wide_arith_randomized(config: Config, _isa: InstructionSetKind) {
             &[(a_at, &limbs_to_bytes(&src512))],
         );
         assert_eq!(read_limbs::<4>(&mut instance, d_at), wide_redc256(&src512, k), "redc256 case {index}, k = {k}");
+
+        // The fused folds: k is a register *value* and there is no carry-out.
+        let fused_regs: &[(Reg, u64)] = &[
+            (A0, u64::from(d_at)),
+            (A1, u64::from(a_at)),
+            (A2, u64::from(b_at)),
+            (A4, k),
+        ];
+        let mut instance = tester.run(&[asm::add256_redc256(A0, A1, A2, A4)], fused_regs, memory);
+        assert_eq!(
+            read_limbs::<4>(&mut instance, d_at),
+            wide_add256_redc256(a, &b, k),
+            "add256_redc256 case {index}, k = {k}"
+        );
+
+        let mut instance = tester.run(&[asm::sub256_redc256(A0, A1, A2, A4)], fused_regs, memory);
+        assert_eq!(
+            read_limbs::<4>(&mut instance, d_at),
+            wide_sub256_redc256(a, &b, k),
+            "sub256_redc256 case {index}, k = {k}"
+        );
     }
 }
 
@@ -5596,6 +5729,45 @@ fn wide_arith_oob(config: Config, _isa: InstructionSetKind) {
         &[(A0, 0x10000), (A1, u64::from(base)), (A2, 38)],
         &[(base, &limbs_to_bytes(&a)), (base + 32, &limbs_to_bytes(&a))],
     );
+
+    // The fused folds must trap on each of their three memory operands, and on
+    // a read-only destination. (`k` is a value, so it can never fault.)
+    for op in [asm::add256_redc256, asm::sub256_redc256] {
+        for address in [0u64, 0x1000, 0xfffff000, 0x10000] {
+            // Bad first source.
+            tester.run_expect_trap(
+                &[op(A0, A1, A2, A3)],
+                &[(A0, u64::from(base)), (A1, address), (A2, u64::from(base + 0x100)), (A3, 38)],
+                &[(base + 0x100, &limbs_to_bytes(&a))],
+            );
+
+            // Bad second source.
+            tester.run_expect_trap(
+                &[op(A0, A1, A2, A3)],
+                &[(A0, u64::from(base)), (A1, u64::from(base + 0x100)), (A2, address), (A3, 38)],
+                &[(base + 0x100, &limbs_to_bytes(&a))],
+            );
+
+            // Bad destination (0x10000 is read-only: probed, never written).
+            tester.run_expect_trap(
+                &[op(A0, A1, A2, A3)],
+                &[
+                    (A0, address),
+                    (A1, u64::from(base)),
+                    (A2, u64::from(base + 0x100)),
+                    (A3, 38),
+                ],
+                &[(base, &limbs_to_bytes(&a)), (base + 0x100, &limbs_to_bytes(&a))],
+            );
+        }
+
+        // An operand range extending past the 4 GiB boundary must trap.
+        tester.run_expect_trap(
+            &[op(A0, A1, A2, A3)],
+            &[(A0, u64::from(base)), (A1, 0xffffffe8), (A2, u64::from(base + 0x100)), (A3, 38)],
+            &[(base + 0x100, &limbs_to_bytes(&a))],
+        );
+    }
 }
 
 fn wide_arith_fused_pairs(config: Config, _isa: InstructionSetKind) {
@@ -5780,6 +5952,23 @@ fn wide_arith_destroyed_regs(config: Config, _isa: InstructionSetKind) {
             ],
             None,
         ),
+        // The fused folds destroy the smaller ADD_SUB set plus their four
+        // operands — including the fold constant register — and write no
+        // carry-out at all.
+        (
+            "add256_redc256",
+            asm::add256_redc256(A0, A1, A2, A3),
+            &wide_arith_destroyed::ADD_SUB,
+            &[(A0, u64::from(d_at)), (A1, u64::from(a_at)), (A2, u64::from(b_at)), (A3, 38)],
+            None,
+        ),
+        (
+            "sub256_redc256",
+            asm::sub256_redc256(A0, A1, A2, A3),
+            &wide_arith_destroyed::ADD_SUB,
+            &[(A0, u64::from(d_at)), (A1, u64::from(a_at)), (A2, u64::from(b_at)), (A3, 38)],
+            None,
+        ),
     ];
 
     for (name, instruction, fixed, operands, carry) in cases {
@@ -5819,6 +6008,21 @@ fn wide_arith_destroyed_regs(config: Config, _isa: InstructionSetKind) {
     assert_eq!(instance.reg(A0), 0x1000, "fault: operand A0 must stay pristine");
     assert_eq!(instance.reg(A1), u64::from(a_at), "fault: operand A1 must stay pristine");
     assert_eq!(instance.reg(A2), u64::from(b_at), "fault: operand A2 must stay pristine");
+
+    // The same for a fused fold, whose fault path is separate: nothing is
+    // destroyed, and the fold constant register survives too.
+    for op in [asm::add256_redc256, asm::sub256_redc256] {
+        let mut regs = markers.to_vec();
+        regs.extend_from_slice(&[(A0, 0x1000), (A1, u64::from(a_at)), (A2, u64::from(b_at)), (A3, 38)]);
+        let instance = tester.run_expect_trap(&[op(A0, A1, A2, A3)], &regs, memory);
+        for &(reg, marker) in markers {
+            assert_eq!(instance.reg(reg), marker, "fused fault: register {reg} must stay pristine");
+        }
+        assert_eq!(instance.reg(A0), 0x1000, "fused fault: operand A0 must stay pristine");
+        assert_eq!(instance.reg(A1), u64::from(a_at), "fused fault: operand A1 must stay pristine");
+        assert_eq!(instance.reg(A2), u64::from(b_at), "fused fault: operand A2 must stay pristine");
+        assert_eq!(instance.reg(A3), 38, "fused fault: fold constant A3 must stay pristine");
+    }
 }
 
 fn wide_arith_dynamic_paging(mut engine_config: Config, _isa: InstructionSetKind) {
@@ -5890,6 +6094,8 @@ fn wide_arith_unsupported(_config: Config, isa: InstructionSetKind) {
         ("sub256", asm::sub256(A0, A3, A1, A2)),
         ("mul256_by_u64", asm::mul256_by_u64(A0, A3, A1, A2)),
         ("mul256_redc256", asm::mul256_redc256(A0, A1, A2, A3)),
+        ("add256_redc256", asm::add256_redc256(A0, A1, A2, A3)),
+        ("sub256_redc256", asm::sub256_redc256(A0, A1, A2, A3)),
     ];
 
     for (name, instruction) in instructions {

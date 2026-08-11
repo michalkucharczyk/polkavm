@@ -1370,6 +1370,7 @@ macro_rules! weights_io {
             $($args)+
 
             add256,
+            add256_redc256,
             add_32,
             add_64,
             add_imm_32,
@@ -1510,6 +1511,7 @@ macro_rules! weights_io {
             store_u64,
             store_u8,
             sub256,
+            sub256_redc256,
             sub_32,
             sub_64,
             trap,
@@ -2965,7 +2967,9 @@ impl Category {
             mul256_redc256 => DivMul,
             redc256 => DivMul,
             add256 => Compute,
+            add256_redc256 => Compute,
             sub256 => Compute,
+            sub256_redc256 => Compute,
             negate_and_add_imm_32 => Compute,
             negate_and_add_imm_64 => Compute,
             or => Compute,

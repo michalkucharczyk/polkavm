@@ -167,9 +167,10 @@ macro_rules! define_cost_model_struct {
 }
 
 define_cost_model_struct! {
-    version: 5,
+    version: 6,
 
     add256,
+    add256_redc256,
     add_32,
     add_64,
     add_imm_32,
@@ -309,6 +310,7 @@ define_cost_model_struct! {
     store_u64,
     store_u8,
     sub256,
+    sub256_redc256,
     sub_32,
     sub_64,
     trap,
@@ -533,6 +535,14 @@ impl InstructionVisitor for GasVisitor {
 
     fn mul256_redc256(&mut self, _m_d: RawReg, _m_s1: RawReg, _m_s2: RawReg, _r_d: RawReg) -> Self::ReturnTy {
         self.cost += self.cost_model.mul256_redc256;
+    }
+
+    fn add256_redc256(&mut self, _d: RawReg, _s1: RawReg, _s2: RawReg, _k: RawReg) -> Self::ReturnTy {
+        self.cost += self.cost_model.add256_redc256;
+    }
+
+    fn sub256_redc256(&mut self, _d: RawReg, _s1: RawReg, _s2: RawReg, _k: RawReg) -> Self::ReturnTy {
+        self.cost += self.cost_model.sub256_redc256;
     }
 
     #[inline(always)]

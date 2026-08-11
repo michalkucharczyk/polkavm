@@ -1954,6 +1954,16 @@ where
     }
 
     #[inline(always)]
+    pub fn add256_redc256(&mut self, d: RawReg, s1: RawReg, s2: RawReg, k: RawReg) {
+        self.wide_arith_instruction(WideArithOp::Add256Redc256, [d, s1, s2, k, d]);
+    }
+
+    #[inline(always)]
+    pub fn sub256_redc256(&mut self, d: RawReg, s1: RawReg, s2: RawReg, k: RawReg) {
+        self.wide_arith_instruction(WideArithOp::Sub256Redc256, [d, s1, s2, k, d]);
+    }
+
+    #[inline(always)]
     pub fn mul256_redc256(&mut self, m_d: RawReg, m_s1: RawReg, m_s2: RawReg, r_d: RawReg) {
         // The fold constant k is hardcoded to A4 (see the instruction's spec
         // comment in polkavm-common).
@@ -2025,6 +2035,12 @@ where
                 WideArithOp::Add256 => self.wide_arith_body_add_sub(regs[0], regs[1], regs[2], regs[3], true),
                 WideArithOp::Sub256 => self.wide_arith_body_add_sub(regs[0], regs[1], regs[2], regs[3], false),
                 WideArithOp::Mul256ByU64 => self.wide_arith_body_mul256_by_u64(regs[0], regs[1], regs[2], regs[3]),
+                WideArithOp::Add256Redc256 => {
+                    self.wide_arith_body_add_sub_redc256(regs[0], regs[1], regs[2], regs[3], true)
+                }
+                WideArithOp::Sub256Redc256 => {
+                    self.wide_arith_body_add_sub_redc256(regs[0], regs[1], regs[2], regs[3], false)
+                }
                 WideArithOp::Mul256Redc256 => {
                     self.wide_arith_body_mul256_redc256(regs[0], regs[1], regs[2], regs[3], regs[4])
                 }
@@ -2371,6 +2387,79 @@ where
         // The carry-out register is written last (after the zeroing), so it
         // may alias any operand, including a destroyed register.
         self.push(mov(RegSize::R64, conv_reg(c), TMP_REG));
+    }
+
+    /// The fused `add256`/`sub256` + fold: `[d] = ([s1] ± [s2])` with the
+    /// carry/borrow-out folded back in modulo `2^256 - k`, `k` being the value
+    /// of the fourth operand register. This replaces a three-instruction guest
+    /// sequence (`add256` + carry store + `redc256`) or a three-`sub256` chain
+    /// with one trampoline round-trip.
+    ///
+    /// The carry/borrow is always 0 or 1, so each fold is a conditional move
+    /// of `k` rather than a multiply — no `rdx`, no `mulx`, and the same
+    /// scratch demand as the plain `add256`. Two folds always suffice: the
+    /// second fold's carry/borrow can only be set when the running value is
+    /// within `k` of the wrap-around point, so the third fold would need
+    /// `2k > 2^256`, impossible for a 64-bit `k` (see
+    /// `wide_add256_redc256`/`wide_sub256_redc256` in polkavm-common, which
+    /// define the exact results).
+    fn wide_arith_body_add_sub_redc256(&mut self, d: RawReg, s1: RawReg, s2: RawReg, k: RawReg, is_add: bool) {
+        let destroyed = Self::wide_arith_destroyed_homes(&wide_arith_destroyed::ADD_SUB, &[d, s1, s2, k]);
+
+        // p: one pointer at a time (s1, then s2, then d); l0..l3: the limbs.
+        let [p, l0, l1, l2, l3] =
+            Self::wide_arith_pick_scratch::<5>(&[conv_reg(d), conv_reg(s1), conv_reg(s2), conv_reg(k)], &destroyed);
+        let limbs = [l0, l1, l2, l3];
+
+        // Phase 1: probes.
+        self.wide_arith_probe_read(s1, 32);
+        self.wide_arith_probe_read(s2, 32);
+        self.wide_arith_probe_write(d, 32);
+
+        // Phase 2: body.
+        self.wide_arith_push_saves(&[p, l0, l1, l2, l3], &destroyed);
+
+        self.wide_arith_capture_ea(p, s1);
+        self.push(load(LoadKind::U64, l0, reg_indirect(RegSize::R64, p)));
+        self.push(load(LoadKind::U64, l1, reg_indirect(RegSize::R64, p + 8)));
+        self.push(load(LoadKind::U64, l2, reg_indirect(RegSize::R64, p + 16)));
+        self.push(load(LoadKind::U64, l3, reg_indirect(RegSize::R64, p + 24)));
+
+        self.wide_arith_capture_ea(p, s2);
+        for (i, &reg) in limbs.iter().enumerate() {
+            let operand = reg_indirect(RegSize::R64, p + 8 * i as i32);
+            match (is_add, i) {
+                (true, 0) => self.push(add((RegSize::R64, reg, operand))),
+                (true, _) => self.push(adc((RegSize::R64, reg, operand))),
+                (false, 0) => self.push(sub((RegSize::R64, reg, operand))),
+                (false, _) => self.push(sbb((RegSize::R64, reg, operand))),
+            }
+        }
+
+        // Two folds of k·(carry|borrow). `mov_imm` (not `xor`) materializes the
+        // zero: the conditional move consumes the carry flag the chain above
+        // just produced, so nothing in between may touch the flags.
+        for _ in 0..2 {
+            self.push(mov_imm(TMP_REG, imm32(0)));
+            self.push(cmov(Condition::Below, RegSize::R64, TMP_REG, conv_reg(k)));
+            for (i, &reg) in limbs.iter().enumerate() {
+                match (is_add, i) {
+                    (true, 0) => self.push(add((RegSize::R64, reg, TMP_REG))),
+                    (true, _) => self.push(adc((reg, imm64(0)))),
+                    (false, 0) => self.push(sub((RegSize::R64, reg, TMP_REG))),
+                    (false, _) => self.push(sbb((reg, imm64(0)))),
+                }
+            }
+        }
+
+        // Phase 3. There is no carry-out register: the fold consumed it.
+        self.wide_arith_capture_ea(p, d);
+        for (i, &reg) in limbs.iter().enumerate() {
+            self.push(store(RegSize::R64, reg_indirect(RegSize::R64, p + 8 * i as i32), reg));
+        }
+
+        self.wide_arith_pop_saves(&[l3, l2, l1, l0, p], &destroyed);
+        self.wide_arith_zero_destroyed(&destroyed);
     }
 
     fn wide_arith_body_mul256_by_u64(&mut self, d: RawReg, c: RawReg, s1: RawReg, s2: RawReg) {
