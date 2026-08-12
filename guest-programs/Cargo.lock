@@ -134,6 +134,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bench-nested-caller"
+version = "0.1.0"
+dependencies = [
+ "polkavm-derive",
+]
+
+[[package]]
+name = "bench-nested-mediator"
+version = "0.1.0"
+dependencies = [
+ "polkavm-derive",
+]
+
+[[package]]
 name = "bench-pinky"
 version = "0.1.0"
 dependencies = [

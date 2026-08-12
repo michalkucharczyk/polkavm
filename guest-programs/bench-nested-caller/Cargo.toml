@@ -1,0 +1,15 @@
+[package]
+name = "bench-nested-caller"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "bench-nested-caller"
+path = "src/main.rs"
+
+[target.'cfg(target_env = "polkavm")'.dependencies]
+polkavm-derive = { path = "../../crates/polkavm-derive" }
+
+[lints]
+workspace = true

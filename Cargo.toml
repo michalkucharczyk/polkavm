@@ -16,6 +16,7 @@ members = [
     "tools/spectool",
     "tools/gastool",
     "tools/opcount",
+    "tools/nested-call",
 
     "examples/doom",
     "examples/quake",

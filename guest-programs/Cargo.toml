@@ -37,6 +37,10 @@ members = [
     "bench-pinky",
     "bench-prime-sieve",
 
+    # Nested host-call overhead harness (tools/nested-call):
+    "bench-nested-caller",
+    "bench-nested-mediator",
+
     # Utilities
     "simplealloc",
 
