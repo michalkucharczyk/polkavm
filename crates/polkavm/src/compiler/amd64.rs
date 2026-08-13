@@ -2121,10 +2121,14 @@ where
     };
 
     /// The number of save slots that end up on the stack (bodies use this to
-    /// compute the offsets of values they pushed above the saves).
+    /// compute the offsets of values they pushed above the saves). Must track
+    /// every mode of `wide_arith_push_saves` exactly: zero slots for xmm
+    /// saves, and DOUBLED slots under POLKAVM_WIDE_ARITH_EXTRA_SAVES.
     fn wide_arith_pushed_saves(count: usize) -> i32 {
         if Self::wide_arith_xmm_saves() {
             0
+        } else if Self::wide_arith_extra_saves() {
+            2 * count as i32
         } else {
             count as i32
         }
