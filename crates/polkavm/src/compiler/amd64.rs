@@ -3416,17 +3416,25 @@ where
     if let Some(kind) = are_we_executing_memset(compiled_module, machine_code_offset) {
         handle_interruption_during_memset(kind, compiled_module, is_gas_metering_enabled, machine_code_offset, vmctx)?;
     } else {
-        let offset = wide_arith_effective_offset(
-            compiled_module,
-            machine_code_offset,
-            vmctx.wide_arith_continuation.load(Ordering::Relaxed),
-        );
+        let continuation = vmctx.wide_arith_continuation.load(Ordering::Relaxed);
+        let offset = wide_arith_effective_offset(compiled_module, machine_code_offset, continuation);
         set_program_counter_after_interruption(compiled_module, offset, vmctx)?;
-        // Note: for a fault inside a wide-arithmetic trampoline the restart
-        // address is still the faulting instruction itself - all faults there
-        // happen in the probe phase, before any state has been modified, so
-        // resuming at the faulting native instruction is always correct.
-        vmctx.next_native_program_counter.store(machine_code_address, Ordering::Relaxed);
+
+        // A wide-arithmetic trampoline is entered with `call` and left with
+        // `ret`, and a fault unwinds the guest's native stack (the zygote's
+        // fault path longjmps, which restores `rsp` from the jump buffer), so
+        // resuming at the faulting instruction *inside* the trampoline would
+        // leave its `ret` with no return address to pop — the guest would
+        // return to garbage and trap. Restart at the site's `call` instead:
+        // every trampoline fault happens in the side-effect-free probe phase,
+        // so re-executing the call and the probes is safe. `sandbox/generic.rs`
+        // does the same thing for the same reason.
+        let restart_address = if are_we_executing_wide_arith(compiled_module, machine_code_offset) {
+            continuation
+        } else {
+            machine_code_address
+        };
+        vmctx.next_native_program_counter.store(restart_address, Ordering::Relaxed);
     }
 
     Ok(())
