@@ -43,6 +43,7 @@ members = [
     # Tests
     "test-blob",
     "test-blake2-asm",
+    "test-25519-pvm",
 ]
 
 [workspace.dependencies]

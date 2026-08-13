@@ -859,6 +859,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-25519-pvm"
+version = "0.1.0"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "ed25519-zebra",
+ "picoalloc",
+ "polkavm-derive",
+ "schnorrkel",
+]
+
+[[package]]
 name = "test-blake2-asm"
 version = "0.1.0"
 dependencies = [

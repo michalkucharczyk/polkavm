@@ -1,0 +1,43 @@
+[package]
+name = "wide-arith-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Correctness tests for the 256-bit wide-arithmetic backend: executes
+# curve25519 point/scalar arithmetic and signature verification inside a real
+# PVM instance (interpreter *and* recompiler) and compares against a host-side
+# reference.
+#
+# Lives outside guest-programs/ on purpose - its .cargo config (build-std,
+# RISC-V default target) is incompatible with `cargo test` - and outside the
+# root workspace so it builds with the host toolchain. Same arrangement as
+# tools/hash-asm-tests.
+
+[[test]]
+name = "pvm_25519"
+path = "tests/pvm_25519.rs"
+
+[dev-dependencies]
+# `generic-sandbox` is what lets the recompiler backend run in a container
+# (the Linux sandbox needs privileges the container does not have).
+polkavm = { path = "../../crates/polkavm", features = ["generic-sandbox"] }
+polkavm-linker = { path = "../../crates/polkavm-linker" }
+
+# The host-side reference. Deliberately the *fork*, so the only difference from
+# the guest is the backend cfg - but built without it, so this is stock 5x51
+# dalek. See the compile_error guard in the test.
+curve25519-dalek = { path = "../../../curve25519-dalek/curve25519-dalek", default-features = false, features = [
+    "alloc",
+    "precomputed-tables",
+] }
+ed25519-zebra = { version = "4", default-features = false }
+ed25519-dalek = { version = "2", default-features = false }
+schnorrkel = { version = "0.11", default-features = false, features = ["preaudit_deprecated"] }
+
+[lints.rust]
+# The guard in tests/pvm_25519.rs checks for a cfg the *guest* sets; declaring
+# it here keeps the check without the unexpected-cfg warning.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(curve25519_dalek_backend, values("pvm"))'] }
+
+[workspace]

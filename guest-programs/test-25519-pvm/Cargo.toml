@@ -1,0 +1,33 @@
+[package]
+name = "test-25519-pvm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Correctness guest for tools/wide-arith-tests: exposes curve25519 point/scalar
+# arithmetic and signature verification so the host test can execute them
+# inside a PVM instance (interpreter *and* recompiler) and compare against a
+# host-side reference. Built by the test itself; not part of the benchmark
+# suite.
+#
+# With `--cfg curve25519_dalek_backend="pvm"` (+ optionally `--cfg pvm_redc`)
+# this exercises the 256-bit wide-arithmetic instructions; without it, stock
+# 5x51 dalek. The host test builds all three configurations from this one
+# source and cross-checks them.
+
+[[bin]]
+name = "test-25519-pvm"
+path = "src/main.rs"
+
+[dependencies]
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "precomputed-tables"] }
+ed25519-zebra = { version = "4", default-features = false }
+ed25519-dalek = { version = "2", default-features = false }
+schnorrkel = { version = "0.11", default-features = false, features = ["preaudit_deprecated"] }
+picoalloc = { workspace = true }
+
+[target.'cfg(target_env = "polkavm")'.dependencies]
+polkavm-derive = { path = "../../crates/polkavm-derive" }
+
+[lints]
+workspace = true

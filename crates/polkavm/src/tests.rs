@@ -5884,6 +5884,87 @@ fn wide_arith_fused_pairs(config: Config, _isa: InstructionSetKind) {
     );
 }
 
+/// The fused folds need a *second* carry fold, and it only fires when the
+/// running value lands within `k` of the wrap-around point. Random operands
+/// never get there (for `add` it needs `a + b >= 2^257 - k`, a window of `k`
+/// out of `2^257`), so this test constructs the operands deliberately.
+///
+/// Found by mutation testing: deleting the second fold from
+/// `wide_arith_body_add_sub_redc256` passed every other test in this
+/// repository, including the randomized sweep — whose operand pairing
+/// (`interesting[(i + 7) % len]`) never pairs the all-ones value with itself.
+///
+/// Each case asserts that a hypothetical single-fold implementation would give
+/// a *different* answer, so the test cannot silently stop discriminating if the
+/// operands or the modulus set ever change.
+fn wide_arith_fold_carry_paths(config: Config, _isa: InstructionSetKind) {
+    use polkavm_common::operation::{wide_add256, wide_add256_redc256, wide_sub256, wide_sub256_redc256};
+
+    let tester = WideArithTester::new(&config);
+    let base = tester.base();
+    let (d_at, a_at, b_at) = (base, base + 0x100, base + 0x200);
+
+    let max = [u64::MAX; 4];
+    let zero = [0u64; 4];
+    let one = [1u64, 0, 0, 0];
+
+    // Only one fold's worth of `k` is ever applied by a broken implementation;
+    // compute that so we can prove each case distinguishes the two.
+    let add_single_fold = |a: &[u64; 4], b: &[u64; 4], k: u64| {
+        let (r, carry) = wide_add256(a, b);
+        wide_add256(&r, &[if carry != 0 { k } else { 0 }, 0, 0, 0]).0
+    };
+    let sub_single_fold = |a: &[u64; 4], b: &[u64; 4], k: u64| {
+        let (r, borrow) = wide_sub256(a, b);
+        wide_sub256(&r, &[if borrow != 0 { k } else { 0 }, 0, 0, 0]).0
+    };
+
+    for k in [2u64, 38, (1 << 32) + 977, u64::MAX] {
+        // add: `max + max = 2^257 - 2`, so the first fold of `k` carries.
+        // sub: `0 - max = 1`, which is below `k`, so the first fold borrows.
+        let cases: &[(bool, [u64; 4], [u64; 4])] = &[
+            (true, max, max),
+            (true, max, one),
+            (false, zero, max),
+            (false, zero, one),
+        ];
+
+        for &(is_add, a, b) in cases {
+            let op = if is_add { asm::add256_redc256 } else { asm::sub256_redc256 };
+            let expected = if is_add {
+                wide_add256_redc256(&a, &b, k)
+            } else {
+                wide_sub256_redc256(&a, &b, k)
+            };
+            let single = if is_add {
+                add_single_fold(&a, &b, k)
+            } else {
+                sub_single_fold(&a, &b, k)
+            };
+
+            let mut instance = tester.run(
+                &[op(A0, A1, A2, A3)],
+                &[(A0, u64::from(d_at)), (A1, u64::from(a_at)), (A2, u64::from(b_at)), (A3, k)],
+                &[(a_at, &limbs_to_bytes(&a)), (b_at, &limbs_to_bytes(&b))],
+            );
+            assert_eq!(
+                read_limbs::<4>(&mut instance, d_at),
+                expected,
+                "is_add = {is_add}, k = {k}, a = {a:x?}, b = {b:x?}"
+            );
+
+            // The first two cases of each family are the ones that need two
+            // folds; prove they discriminate.
+            if (is_add && (a, b) == (max, max)) || (!is_add && (a, b) == (zero, max)) {
+                assert_ne!(
+                    expected, single,
+                    "case no longer exercises the second fold: is_add = {is_add}, k = {k}"
+                );
+            }
+        }
+    }
+}
+
 fn wide_arith_destroyed_regs(config: Config, _isa: InstructionSetKind) {
     use polkavm_common::operation::{wide_add256, wide_mul256_by_u64};
     use polkavm_common::program::wide_arith_destroyed;
@@ -6737,6 +6818,7 @@ run_tests_on_isa! { latest64, InstructionSetKind::Latest64,
     wide_arith_destroyed_regs
     wide_arith_dynamic_paging
     wide_arith_fused_pairs
+    wide_arith_fold_carry_paths
 }
 
 run_test_blob_tests! {
