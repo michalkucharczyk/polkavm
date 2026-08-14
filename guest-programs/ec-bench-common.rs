@@ -28,8 +28,12 @@ struct State {
     count: usize,
 }
 
-// Sized for the worst case (G2 at MAX_COUNT): ~200 KiB of bases, ~264 KiB of
-// wNAF digits, and one live bucket vector at a time under serial Pippenger.
+// Generous on purpose. Measured on the worst case (G2 at MAX_COUNT): 512 KiB
+// traps, and at 768 KiB the gas per run *changes* (+49k) because picoalloc
+// starts working harder - so anything under 1 MiB silently taxes the numbers
+// rather than failing. The floor is close enough that a larger size grid or a
+// bigger field (bw6-761) would land in it, and an untouched static heap costs
+// nothing at runtime.
 define_benchmark! {
     heap_size = 16 * 1024 * 1024,
     state = State {
