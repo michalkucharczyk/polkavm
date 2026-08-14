@@ -7,11 +7,17 @@ set -e
 # verification pays for.
 SIZES="${SIZES:-16,64,256,1024}"
 
+# benchtool disables ASLR by re-execing itself, which needs a personality()
+# call containers usually forbid. ASLR=1 skips that: good enough for correctness
+# checks, not for publishable timings.
+aslr=""
+[ "${ASLR:-0}" = "1" ] && aslr="--aslr"
+
 cargo build --release
 
 # No trailing slash: also matches the "<name>-native" host-library variants.
 # --size is passed to every bench; the ones that do not export
 # `benchmark_set_size` (pairing, mul) simply run unparameterized.
 for b in bls381-pairing bls381-msm-g1 bls381-msm-g2 bls381-mul-g1 bander-msm bander-mul; do
-    target/release/benchtool benchmark "runtime/$b" --size "$SIZES"
+    target/release/benchtool benchmark "runtime/$b" --size "$SIZES" $aslr
 done
