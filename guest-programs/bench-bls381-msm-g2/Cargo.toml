@@ -1,0 +1,34 @@
+[package]
+name = "bench-bls381-msm-g2"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "bench_bls381_msm_g2"
+path = "src/main.rs"
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "bench-bls381-msm-g2"
+path = "src/main.rs"
+
+[dependencies]
+# Plain arkworks, not the `-ext` hook crates sp_crypto_ec_utils uses to offload
+# to the host. `ark-ec/parallel` stays off: the PVM guest is single-threaded, so
+# a rayon host build would not be a per-core comparison.
+ark-bls12-381 = { version = "0.5", default-features = false, features = ["curve"] }
+ark-ec = { version = "0.5", default-features = false }
+ark-ff = { version = "0.5", default-features = false }
+picoalloc = { workspace = true }
+
+[target.'cfg(target_env = "polkavm")'.dependencies]
+polkavm-derive = { path = "../../crates/polkavm-derive" }
+
+[features]
+# Link compiler_builtins' word-wise memcpy/memset (what real-world guests get).
+default = ["builtins-mem"]
+builtins-mem = []
+
+[lints]
+workspace = true
