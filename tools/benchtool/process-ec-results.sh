@@ -16,15 +16,18 @@
 #   runtime/<bench>/<backend>/<count>: ... : 1.23ms  - MSM, <count> = bases
 #
 # Roles per benchmark (same naming as the report / process-crypto-results.sh):
-#   host portable = <bench>        with the native backend (plain build)
+#   host portable = <bench>        with the native backend (plain build) - the
+#                   feature set production sp-crypto-ec-utils actually compiles
 #   host native   = <bench>-native with the native backend
-#                   (-C target-cpu=native, built by build-ec-native.sh;
-#                   column shows "-" when those libraries are absent)
+#                   (-C target-cpu=native *plus* ark-ff/asm, built by
+#                   build-ec-native.sh) - the fastest host reachable without
+#                   patching arkworks; column shows "-" when absent
 #   pvm           = <bench>        with the polkavm64_compiler_sync_gas backend
 #
-# All three are single-threaded. The production RFC-163 host functions are not:
-# sp-crypto-ec-utils's `std` feature enables `ark-ec/parallel`, so a validator
-# can parallelize MSM across cores on top of the per-core numbers below.
+# All three are single-threaded. Production additionally enables
+# `ark-ec/parallel` via `std`, which helps MSM (parallel over Pippenger windows)
+# and multi-pair Miller loops, but cannot help `mul_*` or `final_exponentiation`
+# at all - those host functions take single values. See the report.
 
 set -eu
 
@@ -89,9 +92,10 @@ $1 ~ /^runtime\// {
 }
 
 END {
-    print "*pvm* = PVM guest blob (recompiler, sync gas) · *host native* = host"
-    print "build with `-C target-cpu=native` (build machine only) · *host portable*"
-    print "= host build that runs on any x86-64. All single-threaded."
+    print "*pvm* = PVM guest blob (recompiler, sync gas) · *host native* = host build"
+    print "with `-C target-cpu=native` + `ark-ff/asm`, the fastest host reachable"
+    print "(build machine only) · *host portable* = runs on any x86-64, and the"
+    print "feature set production ships. All single-threaded."
     print ""
 
     if (unsized_rows) {
