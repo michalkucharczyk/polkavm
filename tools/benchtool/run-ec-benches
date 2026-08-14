@@ -1,0 +1,17 @@
+#!/bin/bash
+
+set -e
+
+# Number of bases for the MSM benchmarks. 1024 is the meaningful top: JAM's
+# validator set is ~1023, so that is the ring size a Safrole ticket
+# verification pays for.
+SIZES="${SIZES:-16,64,256,1024}"
+
+cargo build --release
+
+# No trailing slash: also matches the "<name>-native" host-library variants.
+# --size is passed to every bench; the ones that do not export
+# `benchmark_set_size` (pairing, mul) simply run unparameterized.
+for b in bls381-pairing bls381-msm-g1 bls381-msm-g2 bls381-mul-g1 bander-msm bander-mul; do
+    target/release/benchtool benchmark "runtime/$b" --size "$SIZES"
+done

@@ -1,0 +1,14 @@
+#!/bin/bash
+
+# Five repeats of the elliptic-curve suite, for validate-runs.sh to check for
+# consistency and to pick a representative run from.
+
+DIR=output_ec_00
+
+mkdir -p $DIR
+
+./run-ec-benches > $DIR/ec-00.txt
+./run-ec-benches > $DIR/ec-01.txt
+./run-ec-benches > $DIR/ec-02.txt
+./run-ec-benches > $DIR/ec-03.txt
+./run-ec-benches > $DIR/ec-05.txt
