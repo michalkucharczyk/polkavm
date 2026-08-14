@@ -36,7 +36,8 @@ native_toolchain="${NATIVE_TOOLCHAIN:-+nightly-2026-08-01}"
 out=target/x86_64-unknown-linux-gnu/release
 
 crates="bench-bls381-pairing bench-bls381-msm-g1 bench-bls381-msm-g2 \
-        bench-bls381-mul-g1 bench-bander-msm bench-bander-mul"
+        bench-bls381-mul-g1 bench-bander-msm bench-bander-mul \
+        bench-bls377-pairing bench-bw6761-pairing"
 
 for crate in $crates; do
     lib=$(echo "$crate" | tr - _)

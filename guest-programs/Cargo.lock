@@ -21,6 +21,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "ark-bls12-377"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfedac3173d12820a5e0d6cd4de31b49719a74f4a41dc09b6652d0276a3b2cd4"
+dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "ark-std",
+]
+
+[[package]]
 name = "ark-bls12-381"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -29,6 +40,18 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-serialize",
+ "ark-std",
+]
+
+[[package]]
+name = "ark-bw6-761"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cc9cae367e0c3c0b52e3ef13371122752654f45d0212ec7306fb0c1c012cd98"
+dependencies = [
+ "ark-bls12-377",
+ "ark-ec",
+ "ark-ff",
  "ark-std",
 ]
 
@@ -242,6 +265,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bench-bls377-pairing"
+version = "0.1.0"
+dependencies = [
+ "ark-bls12-377",
+ "ark-ec",
+ "ark-ff",
+ "picoalloc",
+ "polkavm-derive",
+]
+
+[[package]]
 name = "bench-bls381-msm-g1"
 version = "0.1.0"
 dependencies = [
@@ -279,6 +313,17 @@ name = "bench-bls381-pairing"
 version = "0.1.0"
 dependencies = [
  "ark-bls12-381",
+ "ark-ec",
+ "ark-ff",
+ "picoalloc",
+ "polkavm-derive",
+]
+
+[[package]]
+name = "bench-bw6761-pairing"
+version = "0.1.0"
+dependencies = [
+ "ark-bw6-761",
  "ark-ec",
  "ark-ff",
  "picoalloc",

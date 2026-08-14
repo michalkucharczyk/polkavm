@@ -20,8 +20,26 @@ const SEED: [u8; 32] = [
     0x94, 0xd0, 0x49, 0xbb, 0x13, 0x37, 0x11, 0xeb, 0x2f, 0xe3, 0x5a, 0x66, 0xd5, 0xa4, 0xf0, 0x6c,
 ];
 
+// Enough for bw6-761's 761-bit base field, should a scalar ever live there.
+const MAX_SEED_BYTES: usize = 96;
+
+/// A deterministic full-width element of `F`.
+///
+/// Scalar fields are not all narrower than the seed: bw6-761's is bls12-377's
+/// *base* field, 377 bits. Fields needing 32 bytes or fewer use `SEED` verbatim,
+/// so the curves measured before this existed are unaffected; wider ones get a
+/// deterministic continuation.
 pub fn seed_scalar<F: PrimeField>() -> F {
-    let scalar = F::from_le_bytes_mod_order(&SEED);
+    let width = (F::MODULUS_BIT_SIZE as usize).div_ceil(8);
+    assert!(width <= MAX_SEED_BYTES);
+
+    let mut bytes = [0u8; MAX_SEED_BYTES];
+    bytes[..SEED.len()].copy_from_slice(&SEED);
+    for index in SEED.len()..width {
+        bytes[index] = SEED[index % SEED.len()] ^ (index as u8).wrapping_mul(0x1b);
+    }
+
+    let scalar = F::from_le_bytes_mod_order(&bytes[..width]);
     assert!(scalar.into_bigint().num_bits() + 8 >= F::MODULUS_BIT_SIZE);
     scalar
 }

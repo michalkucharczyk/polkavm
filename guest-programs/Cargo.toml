@@ -26,6 +26,8 @@ members = [
     "bench-recover-k256",
     "bench-recover-libsecp",
     "bench-bls381-pairing",
+    "bench-bls377-pairing",
+    "bench-bw6761-pairing",
     "bench-bls381-msm-g1",
     "bench-bls381-msm-g2",
     "bench-bls381-mul-g1",
