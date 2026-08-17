@@ -1,0 +1,38 @@
+[package]
+name = "bench-vesta-mul"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "bench_vesta_mul"
+path = "src/main.rs"
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "bench-vesta-mul"
+path = "src/main.rs"
+
+[dependencies]
+# Plain arkworks, not the `-ext` hook crates sp_crypto_ec_utils uses to offload
+# to the host. `ark-ec/parallel` stays off: the PVM guest is single-threaded, so
+# a rayon host build would not be a per-core comparison.
+ark-vesta = { version = "0.5", default-features = false }
+ark-ec = { version = "0.5", default-features = false }
+ark-ff = { version = "0.5", default-features = false }
+picoalloc = { workspace = true }
+
+[target.'cfg(target_env = "polkavm")'.dependencies]
+polkavm-derive = { path = "../../crates/polkavm-derive" }
+
+[features]
+# Link compiler_builtins' word-wise memcpy/memset (what real-world guests get).
+default = ["builtins-mem"]
+builtins-mem = []
+# ark-ff's hand-written x86-64 Montgomery multiply/square. Inert unless bmi2 and
+# adx are also compile-time enabled, so it only does anything on the
+# `-C target-cpu=native` host build - see build-ec-native.sh.
+host-asm = ["ark-ff/asm"]
+
+[lints]
+workspace = true

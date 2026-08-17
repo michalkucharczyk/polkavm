@@ -57,7 +57,9 @@ out=target/x86_64-unknown-linux-gnu/release
 
 crates="bench-bls381-pairing bench-bls381-msm-g1 bench-bls381-msm-g2 \
         bench-bls381-mul-g1 bench-bander-msm bench-bander-mul \
-        bench-bls377-pairing bench-bw6761-pairing"
+        bench-bls377-pairing bench-bw6761-pairing \
+        bench-bls381-mul-g2 bench-pallas-msm bench-pallas-mul \
+        bench-vesta-msm bench-vesta-mul"
 
 for crate in $crates; do
     lib=$(echo "$crate" | tr - _)

@@ -10,35 +10,18 @@ polkavm_derive::min_stack_size!(256 * 1024);
 // `sp_crypto_ec_utils::utils::mul_te` calls
 // `<EdwardsConfig as TECurveConfig>::mul_affine(&base, &scalar).into_affine()`.
 //
-// Note the twisted Edwards `mul_affine` is a plain double-and-add over
+// The twisted Edwards `mul_affine` is a plain double-and-add over
 // `BitIteratorBE::without_leading_zeros`, with no windowing — unlike the short
-// Weierstrass side, which uses `sw_double_and_add_affine`.
-#[path = "../../ec-fixtures.rs"]
-mod fixtures;
+// Weierstrass side, which uses `sw_double_and_add_affine`. That difference is why
+// the SW curves in this suite (pallas, vesta, bls12-381) are not interchangeable
+// with this row.
+use ark_ec::{twisted_edwards::TECurveConfig, CurveGroup};
+use ark_ed_on_bls12_381_bandersnatch::{EdwardsAffine, EdwardsConfig};
 
-use ark_ec::{twisted_edwards::TECurveConfig, AffineRepr, CurveGroup};
-use ark_ed_on_bls12_381_bandersnatch::{EdwardsAffine, EdwardsConfig, Fr};
-use ark_ff::PrimeField;
+type Base = EdwardsAffine;
 
-struct State;
-define_benchmark! {
-    heap_size = 64 * 1024,
-    state = State,
-}
-
-fn mul_once(base: &EdwardsAffine, scalar: &[u64]) -> EdwardsAffine {
+fn mul_once(base: &Base, scalar: &[u64]) -> Base {
     EdwardsConfig::mul_affine(base, scalar).into_affine()
 }
 
-fn benchmark_initialize(_state: &mut State) {
-    let generator = EdwardsAffine::generator();
-    assert!(mul_once(&generator, &[2]) == (generator.into_group() + generator).into_affine());
-    assert!(mul_once(&generator, Fr::MODULUS.as_ref()) == EdwardsAffine::zero());
-}
-
-fn benchmark_run(_state: &mut State) {
-    use core::hint::black_box;
-
-    let scalar = fixtures::seed_limbs::<Fr>();
-    let _ = black_box(mul_once(black_box(&EdwardsAffine::generator()), black_box(scalar.as_ref())));
-}
+include!("../../ec-mul-bench-common.rs");

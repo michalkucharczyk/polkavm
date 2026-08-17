@@ -6,12 +6,12 @@ include!("../../bench-common.rs");
 #[cfg(target_env = "polkavm")]
 polkavm_derive::min_stack_size!(256 * 1024);
 
-// The `bls12_381_mul_g1` host function: `sp_crypto_ec_utils::utils::mul_sw`
-// calls `<g1::Config as SWCurveConfig>::mul_affine(&base, &scalar).into_affine()`.
-use ark_bls12_381::{g1::Config, G1Affine};
+// The `vesta_mul` host function: `sp_crypto_ec_utils::utils::mul_sw` calls
+// `<VestaConfig as SWCurveConfig>::mul_affine(&base, &scalar).into_affine()`.
 use ark_ec::{short_weierstrass::SWCurveConfig, CurveGroup};
+use ark_vesta::{Affine, VestaConfig as Config};
 
-type Base = G1Affine;
+type Base = Affine;
 
 fn mul_once(base: &Base, scalar: &[u64]) -> Base {
     Config::mul_affine(base, scalar).into_affine()

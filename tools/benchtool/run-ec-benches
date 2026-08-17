@@ -19,6 +19,7 @@ cargo build --release
 # --size is passed to every bench; the ones that do not export
 # `benchmark_set_size` (pairing, mul) simply run unparameterized.
 for b in bls381-pairing bls381-msm-g1 bls381-msm-g2 bls381-mul-g1 bander-msm bander-mul \
-         bls377-pairing bw6761-pairing; do
+         bls377-pairing bw6761-pairing \
+         bls381-mul-g2 pallas-msm pallas-mul vesta-msm vesta-mul; do
     target/release/benchtool benchmark "runtime/$b" --size "$SIZES" $aslr
 done

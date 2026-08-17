@@ -62,21 +62,34 @@ if [ "${SOLANA_PLATFORM_TOOLS_DIR:-}" == "" ]; then
     esac
 fi
 
+# Crates whose 32-bit blob is deliberately not produced. bench-pallas-msm and
+# bench-vesta-msm build for rv32 but *trap at runtime*: arkworks' MSM panics
+# inside `msm_bigint_wnaf` under polkavm32, while the identical source is correct
+# on rv64, on the native x86-64 build, and for every other curve in the suite
+# (including 6-limb short Weierstrass and 4-limb twisted Edwards). Suspected
+# rv32 miscompile; tracked separately. Emitting the blob would make benchtool
+# discover it and panic mid-run, so it is skipped rather than left to fail.
+SKIP_RV32="bench-pallas-msm bench-vesta-msm"
+
 build_polkavm() {
-    echo "> Building: '$1' (polkavm, 32-bit)"
+    if [[ " $SKIP_RV32 " == *" $1 "* ]]; then
+        echo "> Skipping: '$1' (polkavm, 32-bit) - see SKIP_RV32"
+    else
+        echo "> Building: '$1' (polkavm, 32-bit)"
 
-    RUSTFLAGS="$extra_flags" cargo build  \
-        -Z build-std=core,alloc \
-        --target "$PWD/../crates/polkavm-linker/targets/legacy/riscv32emac-unknown-none-polkavm.json" \
-        -q --release --bin $1 -p $1
+        RUSTFLAGS="$extra_flags" cargo build \
+            -Z build-std=core,alloc \
+            --target "$PWD/../crates/polkavm-linker/targets/legacy/riscv32emac-unknown-none-polkavm.json" \
+            -q --release --bin $1 -p $1
 
-    pushd ..
+        pushd ..
 
-    cargo run -q -p polkatool link \
-        --run-only-if-newer $CARGO_TARGET_DIR/riscv32emac-unknown-none-polkavm/release/$1 \
-        -o $CARGO_TARGET_DIR/riscv32emac-unknown-none-polkavm/release/$1.polkavm
+        cargo run -q -p polkatool link \
+            --run-only-if-newer $CARGO_TARGET_DIR/riscv32emac-unknown-none-polkavm/release/$1 \
+            -o $CARGO_TARGET_DIR/riscv32emac-unknown-none-polkavm/release/$1.polkavm
 
-    popd
+        popd
+    fi
 
     echo "> Building: '$1' (polkavm, 64-bit)"
 
@@ -162,6 +175,11 @@ build_benchmark "bench-bw6761-pairing"
 build_benchmark "bench-bls381-msm-g1"
 build_benchmark "bench-bls381-msm-g2"
 build_benchmark "bench-bls381-mul-g1"
+build_benchmark "bench-bls381-mul-g2"
+build_benchmark "bench-pallas-msm"
+build_benchmark "bench-pallas-mul"
+build_benchmark "bench-vesta-msm"
+build_benchmark "bench-vesta-mul"
 build_benchmark "bench-bander-msm"
 build_benchmark "bench-bander-mul"
 build_benchmark "bench-blake2-128"

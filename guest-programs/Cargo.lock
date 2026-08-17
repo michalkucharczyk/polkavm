@@ -132,6 +132,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ark-pallas"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c676d42c65f0b2d334fc0ae72a422de2e62ed75beb3022050c0e8a81f6ccc0f"
+dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "ark-std",
+]
+
+[[package]]
 name = "ark-poly"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -178,6 +189,18 @@ checksum = "246a225cc6131e9ee4f24619af0f19d67761fff15d7ccc22e42b80846e69449a"
 dependencies = [
  "num-traits",
  "rand",
+]
+
+[[package]]
+name = "ark-vesta"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3a6d658e5e7380af710828550b2dc2c7b033c9f3103d2690711cb07d5a62df6"
+dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "ark-pallas",
+ "ark-std",
 ]
 
 [[package]]
@@ -309,6 +332,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bench-bls381-mul-g2"
+version = "0.1.0"
+dependencies = [
+ "ark-bls12-381",
+ "ark-ec",
+ "ark-ff",
+ "picoalloc",
+ "polkavm-derive",
+]
+
+[[package]]
 name = "bench-bls381-pairing"
 version = "0.1.0"
 dependencies = [
@@ -406,6 +440,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "bench-pallas-msm"
+version = "0.1.0"
+dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "ark-pallas",
+ "picoalloc",
+ "polkavm-derive",
+]
+
+[[package]]
+name = "bench-pallas-mul"
+version = "0.1.0"
+dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "ark-pallas",
+ "picoalloc",
+ "polkavm-derive",
+]
+
+[[package]]
 name = "bench-pinky"
 version = "0.1.0"
 dependencies = [
@@ -487,6 +543,28 @@ dependencies = [
  "picoalloc",
  "polkavm-derive",
  "twox-hash",
+]
+
+[[package]]
+name = "bench-vesta-msm"
+version = "0.1.0"
+dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "ark-vesta",
+ "picoalloc",
+ "polkavm-derive",
+]
+
+[[package]]
+name = "bench-vesta-mul"
+version = "0.1.0"
+dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "ark-vesta",
+ "picoalloc",
+ "polkavm-derive",
 ]
 
 [[package]]
