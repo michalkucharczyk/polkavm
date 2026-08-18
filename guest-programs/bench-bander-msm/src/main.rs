@@ -11,9 +11,10 @@ polkavm_derive::min_stack_size!(256 * 1024);
 // `Vec<ScalarField>` and calls
 // `<EdwardsConfig as TECurveConfig>::msm(..).into_affine()`.
 //
-// Bandersnatch in twisted Edwards form is JAM's Safrole / ring-VRF curve, which
-// makes this the most directly relevant row in the suite: ticket verification
-// pays an MSM of roughly the validator-set size.
+// Bandersnatch in twisted Edwards form is the curve JAM's Safrole / ring-VRF uses,
+// so this is a directly relevant row. The size sweep exists to expose Pippenger's
+// sub-linear per-point scaling, not because any caller is known to need a
+// particular n.
 use ark_ec::{twisted_edwards::TECurveConfig, CurveGroup};
 use ark_ed_on_bls12_381_bandersnatch::{EdwardsAffine, EdwardsConfig};
 
