@@ -11,7 +11,7 @@ mod asm_fq_mul;
 // harness over LLVM's codegen for the same kernel.
 use ark_bls12_381::Fq;
 
-#[inline(never)]
+#[inline(always)]
 fn fq_mul(a: &mut Fq, b: &Fq) {
     asm_fq_mul::mul_assign(a, b);
 }

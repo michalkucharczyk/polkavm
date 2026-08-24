@@ -25,10 +25,6 @@ polkavm-derive = { path = "../../crates/polkavm-derive" }
 # Link compiler_builtins' word-wise memcpy/memset (what real-world guests get).
 default = ["builtins-mem"]
 builtins-mem = []
-# ark-ff's hand-written x86-64 Montgomery multiply. Inert unless bmi2 and adx
-# are also compile-time enabled, so it only does anything on the
-# `-C target-cpu=native` host build.
-host-asm = ["ark-ff/asm"]
 
 [lints]
 workspace = true
