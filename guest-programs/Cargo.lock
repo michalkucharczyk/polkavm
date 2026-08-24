@@ -404,6 +404,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bench-fq381mul"
+version = "0.1.0"
+dependencies = [
+ "ark-bls12-381",
+ "ark-ff",
+ "picoalloc",
+ "polkavm-derive",
+]
+
+[[package]]
+name = "bench-fq381mul-asm"
+version = "0.1.0"
+dependencies = [
+ "ark-bls12-381",
+ "ark-ff",
+ "picoalloc",
+ "polkavm-derive",
+]
+
+[[package]]
 name = "bench-keccak-256"
 version = "0.1.0"
 dependencies = [

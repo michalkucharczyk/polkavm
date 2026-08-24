@@ -1,0 +1,24 @@
+[package]
+name = "fqmul-asm-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Correctness test for bench-fq381mul-asm: executes the hand-written RISC-V
+# Montgomery multiply inside a PVM instance and compares the raw limbs against
+# ark-ff on the host. bench-fq381mul (LLVM's codegen for the same kernel) runs
+# through the identical checks, so a failure can be attributed.
+# Lives outside guest-programs/ on purpose - its .cargo config (build-std,
+# RISC-V default target) is incompatible with `cargo test`.
+
+[[test]]
+name = "pvm_asm"
+path = "tests/pvm_asm.rs"
+
+[dev-dependencies]
+ark-bls12-381 = { version = "0.5", default-features = false, features = ["curve"] }
+ark-ff = { version = "0.5", default-features = false }
+polkavm = { path = "../../crates/polkavm" }
+polkavm-linker = { path = "../../crates/polkavm-linker" }
+
+[workspace]
