@@ -72,7 +72,7 @@ fi
 # bench-fq381mul-asm is 32-bit-skipped for a different reason: its kernel is a
 # riscv64 .S using 64-bit mul/mulhu, so an rv32 blob would silently be the plain
 # ark-ff fallback - i.e. a duplicate of bench-fq381mul, not an asm measurement.
-SKIP_RV32="bench-pallas-msm bench-vesta-msm bench-fq381mul-asm"
+SKIP_RV32="bench-pallas-msm bench-vesta-msm bench-fq381mul-asm bench-fq381mul-asm2"
 
 build_polkavm() {
     if [[ " $SKIP_RV32 " == *" $1 "* ]]; then
@@ -187,6 +187,7 @@ build_benchmark "bench-bander-msm"
 build_benchmark "bench-bander-mul"
 build_benchmark "bench-fq381mul"
 build_benchmark "bench-fq381mul-asm"
+build_benchmark "bench-fq381mul-asm2"
 build_benchmark "bench-blake2-128"
 build_benchmark "bench-blake2-256"
 build_benchmark "bench-blake2-256-asm"

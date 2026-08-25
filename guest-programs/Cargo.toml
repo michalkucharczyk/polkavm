@@ -40,6 +40,7 @@ members = [
     "bench-bander-mul",
     "bench-fq381mul",
     "bench-fq381mul-asm",
+    "bench-fq381mul-asm2",
     "bench-blake2-128",
     "bench-blake2-256",
     "bench-blake2-256-asm",

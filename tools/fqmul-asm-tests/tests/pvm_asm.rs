@@ -2,10 +2,10 @@
 //! blobs inside a real PVM instance (interpreter backend) and requires the raw
 //! output limbs to be byte-identical to ark-ff's on the host.
 //!
-//! `bench-fq381mul-asm` is the hand-written kernel under test;
-//! `bench-fq381mul` is LLVM's codegen for the same thing and is run through the
-//! same vectors, so a failure tells us whether the assembly or the harness is
-//! at fault.
+//! `bench-fq381mul-asm` and `bench-fq381mul-asm2` are the hand-written kernels
+//! under test; `bench-fq381mul` is LLVM's codegen for the same thing and is run
+//! through the same vectors, so a failure tells us whether an assembly kernel
+//! or the harness is at fault.
 //!
 //! The blobs are built by this test with the toolchain/target the benchmarks
 //! use, mirroring how crates/polkavm's own tests build their test blobs.
@@ -175,6 +175,11 @@ fn check_blob(package: &str) {
 #[test]
 fn asm_fq_mul_in_pvm_matches_ark_ff() {
     check_blob("bench-fq381mul-asm");
+}
+
+#[test]
+fn asm2_fq_mul_in_pvm_matches_ark_ff() {
+    check_blob("bench-fq381mul-asm2");
 }
 
 #[test]
