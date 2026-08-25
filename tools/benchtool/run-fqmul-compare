@@ -1,0 +1,26 @@
+#!/bin/bash
+
+set -e
+
+# One run of all three bls12-381 Fq Montgomery multiply benchmarks, in a fixed
+# order, so their wall-clock numbers come from the same conditions:
+#
+#   fq381mul       LLVM's codegen for ark-ff's mul_assign
+#   fq381mul-asm   hand-written kernel scheduled for the fewest PVM instructions
+#   fq381mul-asm2  hand-written kernel scheduled for the emitted x86
+#
+# The multiply chain length is `--size`, so per-multiply cost is the slope of
+# time against size and the harness's fixed cost drops out. Compare the
+# runtime/*/polkavm64_compiler_sync_gas rows; the interpreter rows track
+# executed instructions (i.e. gas) rather than time.
+#
+# benchtool disables ASLR by re-execing itself, which needs a personality()
+# call containers usually forbid. ASLR=1 skips that: fine for correctness,
+# not for publishable timings.
+SIZES="${SIZES:-1000,4000}"
+aslr=""
+[ "${ASLR:-0}" = "1" ] && aslr="--aslr"
+
+cargo build --release
+
+target/release/benchtool benchmark fq381mul --size "$SIZES" $aslr
